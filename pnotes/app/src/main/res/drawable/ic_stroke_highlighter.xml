@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Apple PencilKit Style: Chisel-tip Highlighter Marker -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M9,11 L3,17 L3,21 L7,21 L13,15 M21.5,3.5 L19.5,1.5 C18.7,0.7 17.3,0.7 16.5,1.5 L10,8 L16,14 L22.5,7.5 C23.3,6.7 23.3,5.3 22.5,4.5 Z M13.5,6.5 L17.5,10.5" />
+</vector>

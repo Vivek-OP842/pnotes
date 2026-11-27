@@ -1,0 +1,30 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="709"
+    android:viewportHeight="709">
+    <group
+        android:translateY="20">
+        <!-- Lower Eraser Tip (White) -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M36.5085,431.907C16.345,408.256 19.1718,372.738 42.8222,352.575L187.196,229.487L369.742,443.601L276.144,523.4L240.163,554.076C233.18,560.029 224.304,563.299 215.128,563.299L174.354,563.299C157.839,563.299 142.158,556.044 131.466,543.457L91.2723,496.141L36.5085,431.907Z" />
+        <!-- Upper Eraser Sleeve (#D57AFC) -->
+        <path
+            android:fillColor="#FFD57AFC"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M214.115,206.538L413.547,36.5091C437.198,16.3457 472.716,19.1724 492.88,42.8228L602.407,171.291C622.571,194.942 619.744,230.46 596.093,250.623L396.661,420.652L214.115,206.538Z" />
+        <!-- Baseline Capsule (White) -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="8"
+            android:strokeLineJoin="round"
+            android:pathData="M254,563h231a15,15 0 0,1 15,15v0a15,15 0 0,1 -15,15h-231a15,15 0 0,1 -15,-15v0a15,15 0 0,1 15,-15Z" />
+    </group>
+</vector>

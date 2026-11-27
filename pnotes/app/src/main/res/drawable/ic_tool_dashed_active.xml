@@ -1,0 +1,50 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="711"
+    android:viewportHeight="711">
+    <group
+        android:translateX="11">
+        <!-- Wood Cone (White) -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M126.235,599.837C122.29,601.384 120.318,602.158 118.984,601.746C117.823,601.387 116.889,600.519 116.443,599.387C115.931,598.086 116.551,596.056 117.79,591.997L218.238,262.878L446.084,474.398L126.235,599.837Z" />
+        <!-- Lead Tip (Black) -->
+        <path
+            android:fillColor="#FF000000"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="6"
+            android:strokeLineJoin="round"
+            android:pathData="M121.374,602.231C118.263,603.451 115.119,600.533 116.096,597.331L152.435,478.268L237.083,556.852L121.374,602.231Z" />
+        <!-- Facet 1 (#FAD872) -->
+        <path
+            android:fillColor="#FFFAD872"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M222.743,256.631L391.695,73.9699C423.604,39.4718 439.559,22.2228 460.202,21.3824C480.845,20.542 498.149,36.4371 532.757,68.2274L535.032,70.3177L290.352,336.682L230.329,328.796L222.743,256.631Z" />
+        <!-- Facet 2 (#FBB73D) -->
+        <path
+            android:fillColor="#FFFBB73D"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M290.146,336.897L535.061,70.277L615.625,144.282L370.71,410.902L306.234,389.517L290.146,336.897Z" />
+        <!-- Facet 3 (#E07E16) -->
+        <path
+            android:fillColor="#FFE07E16"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M370.032,411.646L615.658,144.252L651.753,177.408C672.121,196.117 673.431,227.808 654.677,248.135L450.004,469.976L390.888,464.818L370.032,411.646Z" />
+        <!-- Dashed Line Elements -->
+        <path
+            android:fillColor="#FF000000"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="2"
+            android:pathData="M224.471,588.979h51.75v22h-51.75Z M296.512,589.02h51.87v22h-51.87Z M368.693,589.057h51.87v22h-51.87Z M440.873,589.094h51.87v22h-51.87Z M513.053,589.131h52.46v22h-52.46Z" />
+    </group>
+</vector>

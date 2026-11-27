@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Horseshoe Magnet Curve (Crimson #EF4444 with Themed Stroke) -->
+    <path
+        android:fillColor="#FFEF4444"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="round"
+        android:pathData="M4,10V14C4,18.4183 7.58172,22 12,22C16.4183,22 20,18.4183 20,14V10H15V14C15,15.6569 13.6569,17 12,17C10.3431,17 9,15.6569 9,14V10H4Z" />
+    <!-- Magnetic North/South Tip Blocks -->
+    <path
+        android:fillColor="@color/tool_active_white_part"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="round"
+        android:pathData="M4,3H9V10H4V3ZM15,3H20V10H15V3Z" />
+</vector>

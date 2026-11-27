@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Taper Pen Body (Sunset Orange #F97316 with Themed Stroke) -->
+    <path
+        android:fillColor="#FFF97316"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="round"
+        android:pathData="M19,2L22,5L9,18L3,21L6,15Z" />
+    <!-- Taper Grip Slit -->
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M16,5L19,8" />
+</vector>

@@ -1,0 +1,78 @@
+# Node / Frontend
+node_modules/
+.npm-cache/
+.tmp/
+dist/
+.next/
+
+# Gradle & Android builds
+.gradle/
+build/
+**/build/
+output.json
+*.apk
+*.aab
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+captures/
+.cxx/
+
+# Local machine config & secrets
+local.properties
+.env
+.env.*
+!.env.example
+*.local
+*.jks
+*.keystore
+keystore.properties
+auth.properties
+
+# Generated analysis / debug artifacts (not part of the app)
+graphify-out/
+.planning/
+hs_err_pid*.log
+replay_pid*.log
+local.properties.wsl-backup
+
+# Ad-hoc screenshots at the app root (QA captures, not app assets)
+current_screen.png
+ref_card_crop.png
+tab_test.png
+tablet_check.png
+screen_*.png
+screenshot_*.png
+tablet_*.png
+
+# Misc & OS
+.DS_Store
+Thumbs.db
+*.log
+logs/
+npm-debug.log*
+yarn-error.log*
+
+# Local design/prototype sources (kept on disk, not published)
+prototype/
+Covers/
+Change Icon/
+selected-toolbar-icons/
+fonts/
+docs/
+.qa/
+scratch/
+.agents/
+.freebuff/
+graphify-out/
+document.json
+extracted_figcraft.svg
+inspect_figcraft.py
+skills-lock.json
+corner_*.png
+popover_crop.png
+*.figcraft
+*.figcraft.bak

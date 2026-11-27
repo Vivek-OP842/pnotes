@@ -1,0 +1,37 @@
+# pnotes R8 / ProGuard rules.
+#
+# Release builds run R8 (isMinifyEnabled = true). Almost everything is safe to shrink and rename:
+# the app uses no reflection, and the .pnote bundle and JSON stores key off string literals, never
+# class or field names. Only the cases below would break, so only they are kept. Keep this list
+# tight: broad -keep rules cost APK size and, by pinning names, are the usual reproducibility risk.
+
+# --- PdfBox-Android (com.tom-roush:pdfbox-android) ----------------------------------------------
+# PdfBox loads fonts, glyph lists and CMaps reflectively from its own bundled resources, so its
+# classes must survive shrinking and keep their names. It also references desktop java.awt / javax
+# types that do not exist on Android, on code paths the app never reaches; silence those so R8's
+# missing-class checks don't fail the build.
+-keep class com.tom_roush.** { *; }
+-dontwarn com.tom_roush.**
+-dontwarn java.awt.**
+-dontwarn javax.**
+-dontwarn org.apache.**
+-dontwarn org.bouncycastle.**
+
+# --- Persisted model enums ----------------------------------------------------------------------
+# Saved enums match on their explicit `id` string (a literal, so R8-safe), but PageSize also falls
+# back to Enum.name(). Keep the core enums whole so renaming can never change a name written to, or
+# read back from, a saved document — the .pnote format must stay forward/backward compatible.
+-keep enum com.pnotes.core.** { *; }
+
+# --- Optimizations -------------------------------------------------------------------------------
+-allowaccessmodification
+-repackageclasses ''
+
+# --- Debug logging ------------------------------------------------------------------------------
+# Verbose/debug logs are diagnostics only: strip them from release bytecode entirely so no debug
+# chatter (GL self-check, scene parsing, editor state) can ever reach logcat in production.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+}
+

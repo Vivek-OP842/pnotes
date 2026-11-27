@@ -1,0 +1,160 @@
+﻿package com.pnotes.canvas
+
+import com.pnotes.core.FakeRenderer
+import com.pnotes.core.geometry.Pt
+import com.pnotes.core.model.Document
+import com.pnotes.core.model.Page
+import com.pnotes.core.model.Rgba
+import com.pnotes.core.model.Stroke
+import com.pnotes.core.pal.RasterSurface
+import com.pnotes.core.pal.Renderer
+import com.pnotes.core.pal.SurfaceFactory
+import com.pnotes.core.stroke.Sample
+import com.pnotes.core.tools.Tool
+import com.pnotes.core.tools.ToolDefaults
+import com.pnotes.ui.theme.Palette
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Locks the sharp-viewport edit replay: a stroke committed (or erased) while the
+ * sharp render is still in flight is replayed onto the freshly published frame,
+ * so it doesn't vanish (or reappear) once the sharp layer settles.
+ */
+class SharpViewportEditReplayTest {
+
+    private class RecordingSurface(override val width: Int, override val height: Int) : RasterSurface {
+        override val devicePixelRatio = 1.0
+        val recorder = FakeRenderer()
+        override fun fill(color: Rgba) {}
+        override fun renderer(): Renderer = recorder
+    }
+
+    private class RecordingFactory : SurfaceFactory {
+        val surfaces = mutableListOf<RecordingSurface>()
+        override fun create(widthPx: Int, heightPx: Int, devicePixelRatio: Double): RasterSurface =
+            RecordingSurface(widthPx, heightPx).also { surfaces.add(it) }
+    }
+
+    private fun dot(x: Double, y: Double): Stroke =
+        Stroke(Tool.PEN, ToolDefaults.configFor(Tool.PEN), mutableListOf(Sample(x, y, 1.0)))
+
+    private val factory = RecordingFactory()
+    private val queued = mutableListOf<() -> Unit>()
+
+    private fun state(page: Page): CanvasState {
+        val doc = Document(mutableListOf(page))
+        return CanvasState(doc, factory, Palette.forAppearance("dark", Rgba(0, 230, 118))).apply {
+            viewportW = 800
+            viewportH = 1000
+            maxCachePx = 100.0 // a 200px page is past the cap already at zoom 1
+            relayout()
+            runAsync = { queued.add(it) }
+            cacheFor(document.pages[0]) // soft cache in place, like the live draw loop keeps it
+        }
+    }
+
+    private fun runPending() {
+        val work = queued.toList()
+        queued.clear()
+        work.forEach { it() }
+    }
+
+    /** Indices of ink-primitive ops (a dot paints circles/polygons) in a recorded op list. */
+    private fun List<String>.inkOps(): List<Int> =
+        withIndex().filter { it.value == "fillCircle" || it.value == "fillPolygon" }.map { it.index }
+
+    private fun List<String>.lastClear(): Int = lastIndexOf("clear")
+
+    /** The sharp ink layer is the last surface the async build created. */
+    private fun sharpInkOps(): List<String> = factory.surfaces.last().recorder.ops
+
+    @Test
+    fun strokeCommittedDuringSharpBuildIsReplayedOntoTheFreshFrame() {
+        val page = Page(200.0, 200.0, mutableListOf(dot(50.0, 50.0)))
+        val st = state(page)
+        st.requestSharpViewport() // snapshots the single existing stroke
+        val late = dot(150.0, 150.0)
+        page.items.add(late)
+        st.appendToCache(page, late) // commits while the build is still in flight
+        runPending() // build + publish + replay
+        val ops = sharpInkOps()
+        val clear = ops.lastClear()
+        assertTrue(clear >= 0) // the replay repaired the late stroke's region
+        val before = ops.inkOps().filter { it < clear }
+        val after = ops.inkOps().filter { it > clear }
+        assertEquals(before.size, after.size) // one dot from the snapshot, one replayed
+        assertTrue(after.isNotEmpty())
+        assertNotNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun eraseDuringSharpBuildIsReplayedOntoTheFreshFrame() {
+        val victim = dot(50.0, 50.0)
+        val page = Page(200.0, 200.0, mutableListOf(victim))
+        val st = state(page)
+        st.requestSharpViewport() // snapshot still contains the victim
+        page.items.remove(victim)
+        assertTrue(st.repairRegion(page, victim.paintBounds().outset(2.0)))
+        runPending()
+        val ops = sharpInkOps()
+        val clear = ops.lastClear()
+        assertTrue(clear >= 0)
+        assertTrue(ops.inkOps().all { it < clear }) // nothing repainted after the replay clear
+    }
+
+    @Test
+    fun editLogDoesNotLeakIntoTheNextPublish() {
+        val page = Page(200.0, 200.0, mutableListOf(dot(50.0, 50.0)))
+        val st = state(page)
+        st.requestSharpViewport()
+        val late = dot(150.0, 150.0)
+        page.items.add(late)
+        st.appendToCache(page, late)
+        st.setZoomAnchored(Pt(0.0, 0.0), 2.0) // view moved: the in-flight frame is discarded
+        runPending()
+        assertNull(st.sharpViewportBlit())
+        st.requestSharpViewport() // fresh snapshot already contains both strokes
+        runPending()
+        assertEquals(-1, sharpInkOps().lastClear()) // no stale replay over the fresh render
+        assertNotNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun sharpViewportBlitToleratesModerateScaleDrift() {
+        val page = Page(200.0, 200.0, mutableListOf(dot(50.0, 50.0)))
+        val st = state(page)
+        st.requestSharpViewport()
+        runPending()
+        assertNotNull(st.sharpViewportBlit())
+
+        // Moderate zoom drift (< 35%) retains sharp viewport blit
+        st.zoom = 1.25
+        assertNotNull(st.sharpViewportBlit())
+
+        // Extreme zoom drift (> 35%) suppresses sharp viewport blit when gesture is not in progress
+        st.zoom = 1.50
+        assertNull(st.sharpViewportBlit())
+    }
+
+    @Test
+    fun appendToSharpInkWithDriftInvalidatesStaleSharpFrame() {
+        val page = Page(200.0, 200.0, mutableListOf(dot(50.0, 50.0)))
+        val st = state(page)
+        st.requestSharpViewport()
+        runPending()
+        assertNotNull(st.sharpViewportBlit())
+
+        // Zoom changed significantly without a sharp rebuild yet
+        st.zoom = 1.30
+        val late = dot(120.0, 120.0)
+        page.items.add(late)
+        st.appendToCache(page, late)
+
+        // Stale sharp frame should have been invalidated rather than corrupted
+        assertNull(st.sharpViewportBlit())
+    }
+}

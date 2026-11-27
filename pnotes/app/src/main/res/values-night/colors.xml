@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dynamic Themed Colors for Active Tool Icons (Dark Mode: Glowing White Stroke & Accents) -->
+    <color name="tool_active_stroke">#FFFFFFFF</color>
+    <color name="tool_active_white_part">#FFFFFFFF</color>
+    <color name="tool_active_white_accent">#FFFFFFFF</color>
+</resources>

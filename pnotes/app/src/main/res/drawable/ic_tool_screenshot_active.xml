@@ -1,0 +1,32 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Screenshot Crop Frame (Cyan #06B6D4 with Themed Stroke) -->
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M6,3V16C6,17.1 6.9,18 8,18H21" />
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M18,21V8C18,6.9 17.1,6 16,6H3" />
+    <!-- Screenshot Capture Lens/Marquee (Vibrant Cyan Fill with Themed Stroke) -->
+    <path
+        android:fillColor="#FF06B6D4"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="round"
+        android:pathData="M9,9H15V15H9Z" />
+    <!-- Corner Crosshairs -->
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.4"
+        android:strokeLineCap="round"
+        android:pathData="M3,3L3,5M3,3L5,3M21,3L21,5M21,3L19,3M3,21L3,19M3,21L5,21M21,21L21,19M21,21L19,21" />
+</vector>

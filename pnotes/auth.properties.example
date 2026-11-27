@@ -1,0 +1,12 @@
+# Sample auth.properties template
+# Copy this file or add the following keys to auth.properties in the project root:
+
+# Google OAuth Web Client ID (from Google Cloud Console / Supabase Auth provider)
+oauthClientId=
+
+# Supabase Project Configuration
+supabaseUrl=https://your-project-ref.supabase.co
+supabaseAnonKey=your-supabase-anon-key
+
+# In-App Purchase Product ID
+premiumProductId=premium_lifetime

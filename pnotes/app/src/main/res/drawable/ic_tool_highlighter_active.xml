@@ -1,0 +1,42 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="705"
+    android:viewportHeight="705">
+    <group
+        android:translateY="48">
+        <!-- Highlighter Body with Warm Golden Amber Gradient -->
+        <path
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M154.167,298.002C140.744,280.096 145.624,254.525 164.698,242.821L475.304,52.2209C491.914,42.0283 513.542,46.0533 525.374,61.5388L659.284,236.805C671.296,252.528 669.234,274.837 654.543,288.091L382.507,533.508C365.915,548.476 340.051,545.966 326.647,528.086L154.167,298.002Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="286.329"
+                    android:startY="146.806"
+                    android:endX="583.943"
+                    android:endY="364.73"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FFF4C700" />
+                    <item android:offset="1.0" android:color="#FF8E7400" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <!-- Grip Collar (#909090) -->
+        <path
+            android:fillColor="#FF909090"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M67.7564,356.98C68.8839,350.233 73.0859,344.394 79.1258,341.182L156.045,300.277L327.045,527.277L268.3,585.578C263.699,590.143 257.32,592.448 250.864,591.877L74.5449,576.277L60.5449,560.277L44.5449,542.277L38.0449,534.777L67.7564,356.98Z" />
+        <!-- White Chisel Tip -->
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="8"
+            android:strokeLineJoin="round"
+            android:pathData="M0.5465,565.277L38.0448,534.778L74.545,576.277L38.0448,586.277L0.5465,565.277Z" />
+    </group>
+</vector>

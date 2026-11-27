@@ -1,0 +1,95 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="128dp"
+    android:height="128dp"
+    android:viewportWidth="128"
+    android:viewportHeight="128">
+
+    <!-- Ambient soft light path -->
+    <path
+        android:pathData="M25,45H99C108,45 113,52 110,61L101,91C99,98 94,102 87,102H35C25,102 19,96 19,88V54C19,49 21,46 25,45Z"
+        android:fillColor="#1AF4B72F" />
+
+    <!-- Rear depth layer -->
+    <path
+        android:pathData="M24,48V42C24,35.9 28.9,31 35,31H52.8C54.6,31 56.3,31.7 57.6,33L64.7,40H94C100.1,40 105,44.9 105,51V82H24V48Z"
+        android:fillColor="#D99A20"
+        android:strokeColor="#F4B72F"
+        android:strokeWidth="1.8" />
+
+    <!-- Folder body -->
+    <path
+        android:pathData="M18,51C18,43.8 23.8,38 31,38H50.7C52.7,38 54.6,38.8 56,40.2L62.3,46.5H96.5C104,46.5 110,52.5 110,60V87.5C110,95.2 104.2,101 96.5,101H31.5C23.9,101 18,95.2 18,87.5V51Z"
+        android:strokeColor="#8A5A0A"
+        android:strokeWidth="2">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="24"
+                android:startY="42"
+                android:endX="103"
+                android:endY="101"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FFE8A3" />
+                <item android:offset="0.48" android:color="#F4B72F" />
+                <item android:offset="1.0" android:color="#D99A20" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Raised top lip -->
+    <path
+        android:pathData="M19.2,52.2C20.6,46.9 25.2,43.2 30.7,43.2H52.4L59.8,50.4H97.2C102.1,50.4 106.4,53 108.6,57.1"
+        android:strokeColor="#B8FFF4CC"
+        android:strokeWidth="1.5">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="21"
+                android:startY="44"
+                android:endX="106"
+                android:endY="61"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#EBFFF9E0" />
+                <item android:offset="1.0" android:color="#EBFFD66B" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Clean upper highlight -->
+    <path
+        android:pathData="M27,61C27,56.6 30.6,53 35,53H99"
+        android:strokeColor="#61FFFFFF"
+        android:strokeWidth="2.6"
+        android:strokeLineCap="round" />
+
+    <!-- Subtle front-plane highlight -->
+    <path
+        android:pathData="M23,68V86.5C23,92.3 27.7,97 33.5,97H94"
+        android:strokeColor="#21FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round" />
+
+    <!-- Dimensional bottom edge -->
+    <path
+        android:pathData="M20.8,86.8C22.8,95.2 27.7,99 35.2,99H96.2C102,99 106.5,95.5 108.2,89"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="30"
+                android:startY="91"
+                android:endX="99"
+                android:endY="101"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#D99A20" />
+                <item android:offset="1.0" android:color="#B27B10" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Tiny edge reflection -->
+    <path
+        android:pathData="M102.7,60.5V86"
+        android:strokeColor="#2EFFFDF0"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round" />
+</vector>

@@ -1,0 +1,1499 @@
+package com.pnotes.ui
+
+import android.content.Context
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.pnotes.canvas.InteractionController
+import com.pnotes.canvas.MotionPredictionHelper
+import com.pnotes.core.geometry.Pt
+import com.pnotes.core.geometry.Rect
+import com.pnotes.core.history.History
+import com.pnotes.core.history.LockItems
+import com.pnotes.core.history.RestyleItems
+import com.pnotes.core.infinite.AddCanvasItem
+import com.pnotes.core.infinite.AddCanvasItems
+import com.pnotes.core.infinite.CanvasBackground
+import com.pnotes.core.infinite.CanvasSelection
+import com.pnotes.core.infinite.CanvasViewport
+import com.pnotes.core.infinite.EraseCanvasItems
+import com.pnotes.core.infinite.MeshPart
+import com.pnotes.core.infinite.MeshedItem
+import com.pnotes.core.infinite.Minimap
+import com.pnotes.core.infinite.OnCanvas
+import com.pnotes.core.infinite.OverlayTessellator
+import com.pnotes.core.infinite.ReplaceCanvasItems
+import com.pnotes.core.infinite.StrokeTessellator
+import com.pnotes.core.infinite.EraseSession
+import com.pnotes.core.infinite.InfiniteDocument
+import com.pnotes.core.infinite.GlowSpec
+import com.pnotes.core.infinite.InkPass
+import com.pnotes.core.infinite.ItemMesher
+import com.pnotes.core.infinite.Waypoint
+import com.pnotes.core.model.CanvasItem
+import com.pnotes.core.model.DrawStyle
+import com.pnotes.core.model.ImageData
+import com.pnotes.core.model.ImageItem
+import com.pnotes.core.model.deepCopy
+import com.pnotes.core.model.Rgba
+import com.pnotes.core.model.ShapeItem
+import com.pnotes.core.model.Stroke
+import com.pnotes.core.stroke.LiveTailRibbon
+import com.pnotes.core.stroke.WetRibbon
+import com.pnotes.core.tools.InkPalette
+import com.pnotes.core.tools.ShapeConfig
+import com.pnotes.core.tools.StrokeTexture
+import com.pnotes.core.tools.Tool
+import com.pnotes.core.tools.ToolPreset
+import com.pnotes.core.tools.ToolConfig
+import com.pnotes.core.tools.ToolDefaults
+import com.pnotes.core.vector.VectorMesher
+import com.pnotes.gl.CanvasScene
+import com.pnotes.gl.InfiniteCanvasView
+import com.pnotes.ui.theme.Palette
+
+/**
+ * The infinite canvas's orchestrator, mirroring [Editor]'s role for the paged notebook: it owns the
+ * document, the view, the history stack and the gesture layer, and exposes the Compose-observable
+ * state the chrome reads.
+ *
+ * It is a sibling of [Editor], not a mode inside it. [Editor] is already the largest file in the
+ * project and every file operation would have grown a document-type branch. It also deliberately
+ * creates no temp directories of its own at construction: [Editor]'s constructor purges the shared
+ * ones, so a second object doing the same would delete the open note's live files.
+ */
+@Stable
+class InfiniteEditor(context: Context) : ToolPopupHost, SelectionMenuHost, LongPressMenuHost {
+
+    private val appContext = context.applicationContext
+
+    var document: InfiniteDocument = InfiniteDocument()
+        private set
+
+    val history = History()
+
+    val view = InfiniteCanvasView(appContext)
+
+    val viewport: CanvasViewport get() = view.viewport
+
+    val interaction = InfiniteInteraction(
+        viewport = view.viewport,
+        requestRender = { view.publish() },
+        onViewChanged = { onViewChanged() },
+        setInteractive = { active, linger -> view.setInteractive(active, linger) },
+        configFor = { configFor(it) },
+        onWetStroke = { publishWetStroke(it) },
+        onCommitStroke = { commitStroke(it) },
+        onEraseBegin = { EraseSession(document) },
+        onEraseEnd = { commitErase(it) },
+        onEraserCursor = { at, radius -> view.setEraserCursor(at, radius) },
+        onPendingShape = { publishPendingShape(it) },
+        onCommitShape = { commitItem(it) },
+        shapeConfig = { shapeConfig },
+        inkColor = { inkColor },
+        detectShapes = { detectShapes },
+        selection = { selection },
+        itemsIn = { rect -> document.itemsIn(rect) },
+        onSelectionChanged = { publishOverlay() },
+        onCommitSelection = { commitSelection(it) },
+        onLiftSelection = { items, at -> scene.setLift(items, at) },
+        devicePxPerDp = { devicePxPerDp },
+        onMinimapPress = { vx, vy -> minimapTap(vx, vy) },
+        onContextMenu = { vp, content, locked -> contextMenu = ContextMenuTarget(vp.x, vp.y, content, locked) },
+        onToolChanged = { adoptTool(it) },
+    )
+
+    private val devicePxPerDp = appContext.resources.displayMetrics.density.toDouble()
+    private val imageCodec = com.pnotes.platform.AndroidImageCodec()
+
+    /** Per-tool style, with the toolbar's active ink colour folded in at draw time. */
+    private val toolConfigs = HashMap<Tool, ToolConfig>()
+
+    /** The armed tool, mirrored into Compose so the toolbar can show which one it is. */
+    var tool by mutableStateOf(Tool.PEN)
+        private set
+
+    /** 3 Quick Presets (Option 3) */
+    val presets = mutableStateListOf<ToolPreset>(
+        ToolPreset(Tool.PEN, InkPalette.presets[0]),
+        ToolPreset(Tool.CALLIGRAPHY, InkPalette.presets[1]),
+        ToolPreset(Tool.HIGHLIGHTER, InkPalette.presets[2])
+    )
+
+    /** Quick stroke width presets (3 to 5 items). */
+    var widthPresets by mutableStateOf(listOf(4.0, 7.0, 10.0))
+        private set
+
+    /** Active stroke width state for Compose reactivity. */
+    var activeToolWidth by mutableStateOf(4.0)
+        private set
+
+    /** Whether the multi-note tab bar is visible beneath the top bar header. */
+    var tabBarVisible by mutableStateOf(true)
+        private set
+
+    fun toggleTabBarVisible() {
+        tabBarVisible = !tabBarVisible
+    }
+
+    fun selectWidthPreset(width: Double) {
+        val targetTool = if (tool.isStroke || tool == Tool.SHAPE || tool == Tool.ERASER) tool else Tool.PEN
+        val currentCfg = toolConfig(targetTool)
+        updateToolConfig(targetTool, currentCfg.copy(baseWidth = width))
+        if (targetTool == Tool.SHAPE) {
+            updateShapeConfig(shapeConfig.copy(strokeWidth = width))
+        }
+        activeToolWidth = width
+    }
+
+    fun addWidthPreset(width: Double) {
+        val rounded = (width * 10.0).toLong() / 10.0
+        if (widthPresets.any { kotlin.math.abs(it - rounded) < 0.1 }) return
+        val updated = if (widthPresets.size < 5) {
+            (widthPresets + rounded).sorted()
+        } else {
+            (widthPresets.dropLast(1) + rounded).sorted()
+        }
+        widthPresets = updated
+    }
+
+    fun removeWidthPreset(index: Int) {
+        if (widthPresets.size > 1 && index in widthPresets.indices) {
+            widthPresets = widthPresets.toMutableList().also { it.removeAt(index) }
+        }
+    }
+
+    fun applyPreset(index: Int) {
+        val preset = presets[index]
+        armTool(preset.tool)
+        val colorIndex = toolbarColors.indexOf(preset.color)
+        if (colorIndex != -1) pickColor(colorIndex)
+        else {
+            // Replace current swatch if color not found
+            toolbarColors = toolbarColors.toMutableList().apply { set(activeColorIndex, preset.color) }
+            pickColor(activeColorIndex)
+        }
+    }
+
+    fun savePreset(index: Int) {
+        presets[index] = ToolPreset(tool, inkColor)
+    }
+
+    /** The active ink colour, used by any tool without a colour override of its own. */
+    var inkColor by mutableStateOf(InkPalette.DEFAULT)
+        private set
+
+    /** The shape tool's style. */
+    var shapeConfig by mutableStateOf(ShapeConfig())
+        private set
+
+    /** Whether a held freehand stroke may snap to the shape it looks like. */
+    var detectShapes by mutableStateOf(true)
+        private set
+
+    /** Live zoom, mirrored into Compose so a readout can follow a pinch frame by frame. */
+    var zoomPercent by mutableStateOf(100)
+        private set
+
+    /** Zoom lock: pinch and the zoom buttons stop changing the zoom, as in the paged editor. */
+    var zoomLocked by mutableStateOf(false)
+        private set
+
+    var title by mutableStateOf("Untitled")
+        private set
+
+    val dirty: Boolean get() = document.dirty
+
+    var canUndo by mutableStateOf(false)
+        private set
+
+    var canRedo by mutableStateOf(false)
+        private set
+
+    /** Set when the GL surface refuses to come up, so the host can say so instead of showing black. */
+    var renderFailure by mutableStateOf<String?>(null)
+        private set
+
+    /** Fired after any edit that makes the document dirty, so the host can schedule an autosave. */
+    var onContentChanged: (() -> Unit)? = null
+
+    /** Whether the minimap is shown. */
+    var minimapVisible by mutableStateOf(true)
+        private set
+
+    fun toggleMinimap() {
+        minimapVisible = !minimapVisible
+        view.minimapVisible = minimapVisible
+    }
+
+    /**
+     * Disappearing ink: strokes are held on screen and melt away instead of joining the document.
+     * The same hold and fade the paged canvas uses, so the wand behaves alike on either surface.
+     */
+    var wandEnabled by mutableStateOf(false)
+        private set
+
+    fun toggleWand() {
+        wandEnabled = !wandEnabled
+        interaction.wandEnabled = wandEnabled
+        if (!wandEnabled) clearFading()
+    }
+
+    /** Saved views, mirrored into Compose so the chrome can list them. */
+    var waypoints by mutableStateOf<List<Waypoint>>(emptyList())
+        private set
+
+    /** Whether the debug HUD is up; toggled by a four-finger tap, as on the paged canvas. */
+    var debugVisible by mutableStateOf(false)
+        private set
+
+    fun toggleDebug() {
+        debugVisible = !debugVisible
+        view.publish()
+    }
+
+    fun rename(name: String) {
+        val clean = name.trim()
+        if (clean.isEmpty()) return
+        document.displayName = clean
+        title = clean
+        markDirty()
+    }
+
+    fun resetView() {
+        if (zoomLocked) return
+        viewport.zoom = 1.0
+        viewport.centerOn(0.0, 0.0)
+        onViewChanged()
+        view.publish()
+    }
+
+    fun zoomIn() {
+        if (zoomLocked) return
+        viewport.zoomAroundCenter(viewport.zoom * ZOOM_STEP)
+        onViewChanged()
+        view.publish()
+    }
+
+    fun zoomOut() {
+        if (zoomLocked) return
+        viewport.zoomAroundCenter(viewport.zoom / ZOOM_STEP)
+        onViewChanged()
+        view.publish()
+    }
+
+    fun clearCanvas() {
+        val allItems = document.items.toList()
+        if (allItems.isEmpty()) return
+        val command = EraseCanvasItems.capture(document, allItems)
+        document.removeAll(allItems)
+        history.push(command)
+        interaction.clearSelection()
+        markDirty()
+        refresh()
+    }
+
+    /** What is selected, and the arithmetic of moving, scaling and rotating it. */
+    var selection = CanvasSelection(document)
+        private set
+
+    /** True while anything is selected, so the chrome can offer the actions that need one. */
+    var hasSelection by mutableStateOf(false)
+        private set
+
+    /** The GL-side mirror of the document. Fed by [modelListener]; never reads the model itself. */
+    private val scene = CanvasScene()
+
+    /** One low-priority thread decoding images, so a big photo never stalls a frame. */
+    private val decodeExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "pnotes-canvas-decode").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+        }
+    }
+
+    /** Where inserted images are written; supplied by the host so both editors share one dir. */
+    var imageDir: java.io.File? = null
+
+    /**
+     * Keeps the renderer in step with the model. Every mutation goes through [InfiniteDocument],
+     * including the ones history performs, so undo and redo repaint through exactly this path with
+     * nothing extra to remember.
+     */
+    private val modelListener = object : InfiniteDocument.Listener {
+        override fun onItemAdded(item: CanvasItem) {
+            pushItem(item)
+        }
+
+        override fun onItemRemoved(item: CanvasItem) {
+            // Drop any mesh job still running for it, so its result cannot file the record again.
+            if (item is ImageItem) vectorMeshGen.remove(item)
+            scene.remove(item)
+        }
+
+        override fun onOrderChanged() {
+            // Once per structural edit rather than once per item, so an eraser drag that cuts a
+            // dozen strokes publishes one ordering instead of a dozen.
+            scene.setOrder(document.items)
+            view.publish()
+        }
+
+        override fun onItemChanged(item: CanvasItem) {
+            pushItem(item)
+            view.publish()
+        }
+
+        override fun onReset() {
+            rebuildScene()
+            view.publish()
+        }
+    }
+
+    init {
+        interaction.motionPredictor = MotionPredictionHelper(view)
+        view.input = { interaction.onTouch(it) }
+        view.genericMotion = { interaction.onGenericMotion(it) }
+        view.afterLayout = { applyInitialView() }
+        view.onContextReady = { renderFailure = view.failure }
+        view.onFourFingerTap = { toggleDebug() }
+        view.onTwoFingerTap = {
+            val eraserConfig = toolConfig(Tool.ERASER)
+            if (eraserConfig.twoFingerTapToggle) {
+                if (tool == Tool.ERASER) previousTool?.let { armTool(it) }
+                else armTool(Tool.ERASER)
+            }
+        }
+        view.minimapVisible = minimapVisible
+        view.scene = scene
+        // Decoding reads a file and can take tens of milliseconds, so it never runs on the render
+        // thread; the finished bitmap is picked up and uploaded at the start of the next frame.
+        scene.decodeOn = { work -> decodeExecutor.execute(work) }
+        document.listener = modelListener
+    }
+
+    /**
+     * Set only while the stroke under the pen is being committed, so the message that adds it also
+     * releases the wet buffer. Two messages would let a frame fall between them and blink.
+     */
+    private var committingWetStroke = false
+
+    /** Tessellate [item] and hand the triangles to the renderer, or drop it if it draws nothing. */
+    private fun pushItem(item: CanvasItem) {
+        if (item is ImageItem) {
+            if (!pushVectorImage(item)) scene.upsertImage(item, item.paintBounds())
+            return
+        }
+        val started = System.nanoTime()
+        val meshed = ItemMesher.mesh(item)
+        scene.lastTessellateMs = (System.nanoTime() - started) / 1_000_000.0
+        if (meshed == null || meshed.isEmpty) {
+            scene.remove(item)
+            return
+        }
+        scene.upsert(item, meshed.parts, meshed.bounds, committingWetStroke)
+    }
+
+    /**
+     * A placed SVG becomes triangles like everything else, so it stays sharp at any zoom instead of
+     * magnifying a texture. Nothing about it is cached as pixels, which is why a pinch costs it
+     * nothing.
+     *
+     * The meshing runs on the decode thread. A thousand-path drawing takes long enough that doing
+     * it inline would stall the edit that triggered it, and a placeholder box holds the space
+     * meanwhile since there is no texture to stand in. The box also stays put when a document uses
+     * only constructs this pipeline does not draw: the gap should be visible, not silent.
+     *
+     * Returns false for a raster image, which takes the texture path as before.
+     */
+    private fun pushVectorImage(item: ImageItem): Boolean {
+        if (!com.pnotes.platform.ImageDecoder.isVector(item.image.file.path)) return false
+        val bounds = item.paintBounds()
+        scene.upsert(item, vectorPlaceholder(bounds), bounds)
+        val token = vectorMeshSeq.incrementAndGet()
+        vectorMeshGen[item] = token
+        val rect = item.rect
+        val orientation = item.orientation
+        val angle = item.angle
+        decodeExecutor.execute {
+            val started = System.nanoTime()
+            val parsed = com.pnotes.platform.VectorScenes.sceneFor(item.image.file)
+            val parts = if (parsed == null) {
+                emptyList()
+            } else {
+                VectorMesher.mesh(parsed, rect, orientation, angle, StrokeTessellator.DEFAULT_TOLERANCE)
+            }
+            val ms = (System.nanoTime() - started) / 1_000_000.0
+            // The mesher stops at a vertex ceiling; say so rather than silently drawing part of it.
+            if (parts.sumOf { it.mesh.vertexCount } >= VectorMesher.MAX_VERTICES) {
+                android.util.Log.w(
+                    "InfiniteEditor",
+                    "svg drawn only as far as the ${VectorMesher.MAX_VERTICES} vertex ceiling: " +
+                        item.image.file.path,
+                )
+            }
+            // Claimed and filed on the main thread, so this cannot land after a removal that was
+            // decided while it ran and put the item back on the canvas.
+            view.post {
+                if (!vectorMeshGen.remove(item, token) || parts.isEmpty()) return@post
+                scene.lastTessellateMs = ms
+                scene.upsert(item, parts, bounds)
+                view.publish()
+            }
+        }
+        return true
+    }
+
+    /** The faint box that holds a vector image's place until its triangles land. */
+    private fun vectorPlaceholder(bounds: Rect): List<MeshPart> {
+        val b = com.pnotes.core.infinite.MeshBuilder(4, 6)
+        b.rect(bounds.left, bounds.top, bounds.w, bounds.h)
+        return listOf(MeshPart(b.build(), VECTOR_PLACEHOLDER, InkPass.OPAQUE))
+    }
+
+    /** Which mesh job owns each vector image's record, so a stale one cannot overwrite a newer. */
+    private val vectorMeshGen = java.util.concurrent.ConcurrentHashMap<ImageItem, Long>()
+    private val vectorMeshSeq = java.util.concurrent.atomic.AtomicLong()
+
+    /** Re-tessellate the whole document, after a load or a wholesale list replacement. */
+    private fun rebuildScene() {
+        scene.reset()
+        vectorMeshGen.clear()
+        for (item in document.items) pushItem(item)
+        scene.setOrder(document.items)
+    }
+
+    /** Repaint the canvas with whatever the model currently says. */
+    fun requestRender() = view.publish()
+
+    // --- tools ---
+
+    var previousTool: Tool? = null
+        private set
+
+    fun armTool(next: Tool) {
+        if (tool != next && tool != Tool.ERASER) {
+            previousTool = tool
+        }
+        // Leaving the selection tools drops the selection, so its chrome cannot linger over ink.
+        if (tool != next && (tool == Tool.SELECT || tool == Tool.LASSO)) interaction.clearSelection()
+        adoptTool(next)
+    }
+
+    fun toggleTool(target: Tool) {
+        if (tool == target) previousTool?.let { armTool(it) }
+        else armTool(target)
+    }
+
+    fun toggleToPreviousTool() {
+        previousTool?.let { armTool(it) }
+    }
+
+    /** Show a tool the gesture layer armed by itself: a long-press grab, and its release. */
+    private fun adoptTool(next: Tool) {
+        tool = next
+        interaction.tool = next
+        activeToolWidth = if (next == Tool.SHAPE) shapeConfig.strokeWidth else toolConfig(next).baseWidth
+        val toolColor = if (next.isStroke) toolConfig(next).let { it.colorOverride ?: it.rgba } else inkColor
+        val idx = toolbarColors.indexOf(toolColor)
+        if (idx >= 0) {
+            activeColorIndex = idx
+        }
+        inkColor = toolColor
+    }
+
+    // --- selection actions ---
+
+    /**
+     * The selection's own clipboard, and the actions the floating menu offers.
+     *
+     * These are the canvas's siblings of the paged controller's, not a reuse of them: the paged ones
+     * are written against pages, and every one of them would need a page index that does not exist
+     * here. The behaviour they present is the same, which is what the shared [SelectionMenu] holds
+     * them to.
+     */
+    private val clipboard = ArrayList<CanvasItem>()
+
+    /** Whether the clipboard was filled by a cut, which the first paste spends. Same rule as the
+     *  paged canvas: a cut moves items, so pasting them back finishes the move. */
+    private var clipboardFromCut = false
+
+    /** Only text needs a measurer to clone, and the canvas has none; this satisfies the signature. */
+    private val textMeasurer = com.pnotes.platform.AndroidTextMeasurer()
+
+    /** Where the floating menu sits, or null while a gesture is running or nothing is selected. */
+    override var selectionMenuRect: Rect? by mutableStateOf(null)
+        private set
+
+    /** Re-anchor the floating menu over the settled selection, or take it away. */
+    private fun refreshSelectionMenu() {
+        val box = selection.box
+        if (box == null || interaction.mode != CanvasPointerMode.IDLE) {
+            selectionMenuRect = null
+            return
+        }
+        val bounds = Rect.bounding(box.corners().map { viewport.contentToViewport(it) })
+        // Lift the anchor's top clear of the rotate grip, which is drawn its arm plus its own
+        // radius above the box. Without this the bar lands on the grip and buries it. The bottom
+        // stays put, so the fallback placement below the selection is unchanged.
+        val clearance = OverlayTessellator.GRIP_ARM_PX + OverlayTessellator.GRIP_PX / 2.0
+        selectionMenuRect = Rect(bounds.x, bounds.y - clearance, bounds.w, bounds.h + clearance)
+    }
+
+    override fun dismissSelectionMenu() {
+        selectionMenuRect = null
+    }
+
+    /** Delete whatever is selected, as one undoable edit. */
+    override fun deleteSelection() {
+        val items = selection.items
+        if (items.isEmpty()) return
+        val command = EraseCanvasItems.capture(document, items)
+        document.removeAll(items)
+        history.push(command)
+        interaction.clearSelection()
+        markDirty()
+        refresh()
+    }
+
+    fun commitInFlightDrawing() {
+        interaction.commitInFlightDrawing()
+    }
+
+    override fun copySelection() {
+        if (selection.isEmpty) return
+        clipboard.clear()
+        clipboardFromCut = false
+        selection.items.mapTo(clipboard) { it.deepCopy(textMeasurer) }
+    }
+
+    override fun cutSelection() {
+        if (selection.isEmpty) return
+        copySelection()
+        clipboardFromCut = true
+        deleteSelection()
+    }
+
+    /** Clone the selection a nudge down and right, and leave the copies selected. */
+    override fun duplicateSelection() {
+        if (selection.isEmpty) return
+        val clones = selection.items.map { it.deepCopy(textMeasurer) }
+        for (clone in clones) clone.translate(DUPLICATE_NUDGE, DUPLICATE_NUDGE)
+        document.addAll(clones)
+        history.push(AddCanvasItems(document, clones))
+        selection.select(clones)
+        markDirty()
+        refresh()
+        publishOverlay()
+    }
+
+    /**
+     * Pin the selection where it is, then put the selection away, since a locked item cannot stay
+     * selected. A held finger over it is the only way back, and it offers exactly that.
+     */
+    override fun lockSelection() {
+        if (selection.isEmpty) return
+        val items = selection.items.toList()
+        for (item in items) item.locked = true
+        history.push(LockItems(items, true))
+        interaction.clearSelection()
+        markDirty()
+        refresh()
+        publishOverlay()
+    }
+
+    override fun unlockItem(item: CanvasItem) {
+        if (!item.locked) return
+        item.locked = false
+        history.push(LockItems(listOf(item), false))
+        markDirty()
+        refresh()
+    }
+
+    /** Paste the clipboard at [atContent], or a nudge from where it was copied. */
+    fun pasteClipboard(atContent: Pt? = null) {
+        if (clipboard.isEmpty()) return
+        val clones = clipboard.map { it.deepCopy(textMeasurer) }
+        var box: Rect? = null
+        for (clone in clones) box = box?.union(clone.bounds()) ?: clone.bounds()
+        val bounds = box ?: return
+        val dx: Double
+        val dy: Double
+        if (atContent == null) {
+            dx = DUPLICATE_NUDGE
+            dy = DUPLICATE_NUDGE
+        } else {
+            dx = atContent.x - bounds.left
+            dy = atContent.y - bounds.top
+        }
+        for (clone in clones) clone.translate(dx, dy)
+        document.addAll(clones)
+        history.push(AddCanvasItems(document, clones))
+        if (clipboardFromCut) {
+            clipboard.clear()
+            clipboardFromCut = false
+        }
+        selection.select(clones)
+        armTool(Tool.SELECT)
+        markDirty()
+        refresh()
+        publishOverlay()
+    }
+
+    override val hasClipboardItems: Boolean get() = clipboard.isNotEmpty()
+
+    // --- long-press paste menu ---
+
+    /** Where a held finger opened the paste menu, or null when no menu is open. */
+    override var contextMenu: ContextMenuTarget? by mutableStateOf(null)
+
+    override val clipboardHasImage: Boolean
+        get() = com.pnotes.platform.SystemClipboard.hasImage(appContext)
+
+    override fun dismissContextMenu() {
+        contextMenu = null
+    }
+
+    override fun pasteItemsAt(content: Pt) {
+        pasteClipboard(content)
+    }
+
+    override fun pasteClipboardImageAt(content: Pt) {
+        val bytes = com.pnotes.platform.SystemClipboard.imageBytes(appContext) ?: return
+        insertImage(bytes, content)
+    }
+
+    /** Put the selection on top. On a flat canvas that is purely a reorder of the item list. */
+    override fun bringToFront() {
+        if (selection.isEmpty) return
+        val before = document.items.toList()
+        val after = com.pnotes.core.infinite.bringToFrontOrder(before, selection.items)
+        if (com.pnotes.core.infinite.sameOrder(before, after)) return
+        document.replaceAll(after)
+        history.push(ReplaceCanvasItems(document, before, after))
+        markDirty()
+        refresh()
+        publishOverlay()
+    }
+
+    override fun selectionStyles(): List<DrawStyle> = selection.items.mapNotNull { DrawStyle.of(it) }
+
+    /** Styles held from the first restyle preview, so a slider drag undoes in one step. */
+    private var restyleBaseline: MutableMap<CanvasItem, DrawStyle>? = null
+
+    /**
+     * Recolour and/or re-thicken the selected strokes and shapes, with the same preview/commit
+     * contract the paged editor uses. The command is wrapped in [OnCanvas] so undo and redo re-file
+     * the index and re-mesh through exactly the path the edit did.
+     */
+    override fun restyleSelection(color: Rgba?, width: Double?, preview: Boolean) {
+        if (selection.isEmpty) return
+        val baseline = restyleBaseline ?: HashMap<CanvasItem, DrawStyle>().also { map ->
+            for (item in selection.items) DrawStyle.of(item)?.let { map[item] = it }
+        }
+        restyleBaseline = if (preview) baseline else null
+        if (color != null || width != null) {
+            for (item in selection.items) {
+                val current = DrawStyle.of(item) ?: continue
+                DrawStyle(color ?: current.color, width ?: current.width).applyTo(item)
+            }
+            document.itemsChanged(selection.items)
+        }
+        if (!preview) {
+            val entries = baseline.mapNotNull { (item, before) ->
+                DrawStyle.of(item)?.takeIf { it != before }?.let { RestyleItems.Entry(item, before, it) }
+            }
+            if (entries.isNotEmpty()) {
+                history.push(OnCanvas(document, RestyleItems(entries), entries.map { it.item }))
+            }
+            color?.let { onColorRemembered?.invoke(it) }
+        }
+        markDirty()
+        refresh()
+        publishOverlay()
+    }
+
+    fun armInkColor(color: Rgba) {
+        inkColor = color
+    }
+
+    /** Arm swatch [index], the same way the paged toolbar picks its ink. */
+    fun pickColor(index: Int) {
+        if (index !in toolbarColors.indices) return
+        activeColorIndex = index
+        val chosenColor = toolbarColors[index]
+        inkColor = chosenColor
+        if (tool.isStroke) {
+            val currentCfg = toolConfigs[tool] ?: toolConfig(tool)
+            updateToolConfig(tool, currentCfg.copy(rgba = chosenColor, colorOverride = null))
+        }
+        onToolStyleChanged?.invoke()
+    }
+
+    fun setToolConfig(forTool: Tool, config: ToolConfig) {
+        toolConfigs[forTool] = config
+    }
+
+    fun armShapeConfig(config: ShapeConfig) {
+        shapeConfig = config
+    }
+
+    fun armDetectShapes(on: Boolean) {
+        detectShapes = on
+    }
+
+    fun configFor(forTool: Tool): ToolConfig {
+        val base = toolConfigs.getOrPut(forTool) { ToolDefaults.configFor(forTool) }
+        return base.copy(rgba = base.colorOverride ?: base.rgba)
+    }
+
+    /**
+     * The stored style for [tool], without the ink colour folded in. The popups edit this, and it
+     * is what gets persisted, so a pen tuned here is the same pen on a note.
+     */
+    override fun toolConfig(tool: Tool): ToolConfig =
+        toolConfigs.getOrPut(tool) { ToolDefaults.configFor(tool) }
+
+    override fun updateToolConfig(tool: Tool, config: ToolConfig) {
+        toolConfigs[tool] = config
+        val currentTarget = if (this.tool.isStroke || this.tool == Tool.SHAPE || this.tool == Tool.ERASER) this.tool else Tool.PEN
+        if (currentTarget == tool) {
+            activeToolWidth = config.baseWidth
+            val currentToolColor = config.colorOverride ?: config.rgba
+            inkColor = currentToolColor
+            val idx = toolbarColors.indexOf(currentToolColor)
+            if (idx >= 0) {
+                activeColorIndex = idx
+            }
+        }
+        onToolStyleChanged?.invoke()
+    }
+
+    override val hostShapeConfig: ShapeConfig get() = shapeConfig
+
+    /** The pen popup's tab row: arm the tool but let the open popup stay up. */
+    override fun armPopupTool(tool: Tool) = armTool(tool)
+
+    /** Clear all contents on the infinite canvas. */
+    override fun clearActivePage() {
+        clearCanvas()
+    }
+
+    override fun updateShapeConfig(config: ShapeConfig) {
+        shapeConfig = config
+        if (tool == Tool.SHAPE) {
+            activeToolWidth = config.strokeWidth
+        }
+        onToolStyleChanged?.invoke()
+    }
+
+    override val hostToolbarColors: List<Rgba> get() = toolbarColors
+    override val hostActiveColorIndex: Int get() = activeColorIndex
+    override val hostRecentColors: List<Rgba> get() = recentColors
+
+    /**
+     * Recolour a swatch from the picker. The swatches belong to the host, which owns the settings
+     * file, so the change is reported rather than only kept here: a colour mixed on the canvas is
+     * the same colour on a note, and it is still there next launch.
+     */
+    override fun setSwatchColor(index: Int, color: Rgba) {
+        if (index !in toolbarColors.indices) return
+        toolbarColors = toolbarColors.toMutableList().also { it[index] = color }
+        pickColor(index)
+        onSwatchColorChanged?.invoke(index, color)
+    }
+
+    fun addToolbarColor(color: Rgba) {
+        val current = toolbarColors.toMutableList()
+        val targetIdx = activeColorIndex.coerceIn(0, 4)
+        if (targetIdx < current.size) {
+            current[targetIdx] = color
+        } else {
+            current.add(color)
+        }
+        toolbarColors = current
+        pickColor(targetIdx)
+        rememberSwatchColor(targetIdx)
+        onSwatchColorChanged?.invoke(targetIdx, color)
+    }
+
+    fun removeToolbarColor(index: Int) {
+        if (toolbarColors.size <= 1) return
+        val current = toolbarColors.toMutableList()
+        if (index in current.indices) {
+            current.removeAt(index)
+            toolbarColors = current
+            val newIndex = index.coerceAtMost(current.lastIndex).coerceIn(0, 4)
+            pickColor(newIndex)
+            onSwatchColorChanged?.invoke(newIndex, toolbarColors[newIndex])
+        }
+    }
+
+    override fun rememberSwatchColor(index: Int) {
+        toolbarColors.getOrNull(index)?.let { onColorRemembered?.invoke(it) }
+    }
+
+    /** Fired when a swatch was recoloured here, so the host can adopt it and persist it. */
+    var onSwatchColorChanged: ((Int, Rgba) -> Unit)? = null
+
+    /** Fired when the picker closed on a colour, so the host can keep it among its recents. */
+    var onColorRemembered: ((Rgba) -> Unit)? = null
+
+    /** The toolbar's swatches and recents, handed over by the host so both surfaces share them. */
+    var toolbarColors by mutableStateOf(InkPalette.presets)
+    var activeColorIndex by mutableStateOf(0)
+    var recentColors by mutableStateOf<List<Rgba>>(emptyList())
+    var toolbarColorCount by mutableStateOf(5)
+
+    /** How this bar is arranged, handed over by the host, which owns the settings file. */
+    var toolbarLayout by mutableStateOf(com.pnotes.core.tools.ToolbarLayout.CANVAS_DEFAULT)
+
+    /** Fired when a tool's style changed here, so the host can persist it. */
+    var onToolStyleChanged: (() -> Unit)? = null
+
+    /** Latch a stylus side button that arrived as a key event, so the pen behaves as on a note. */
+    fun onStylusButtonKey(keyCode: Int, down: Boolean): Boolean =
+        interaction.onStylusButtonKey(keyCode, down)
+
+    // --- drawing ---
+
+    /** The stroke whose settled runs are already in the scene's wet buffer, by identity. */
+    private var wetOwner: Stroke? = null
+
+    /** Ribbon points of [wetOwner] already meshed into it, and the arc those points spent. */
+    private var wetMeshed = 0
+    private var wetArc = 0.0
+
+    /**
+     * Hand the stroke under the pen to the scene, in two pieces where the pen allows it.
+     *
+     * Re-meshing and re-uploading the whole ribbon on every sample makes a frame cost what the
+     * stroke has already laid down, so a long one falls behind the hand. Instead the run that has
+     * stopped moving is uploaded once, [WET_RUN_POINTS] at a time and never again, and only the
+     * few points still in play are rebuilt each frame. The two runs overlap by a point so the quad
+     * bridging them belongs to the later one and no gap can open on the join.
+     *
+     * Ink the runs cannot simply be laid over each other — neon, whose halos would compound where
+     * they meet, and the highlighter, which is composited at its own alpha — is meshed whole, as
+     * are the taper pen and the straight-line tools, which have no settled run to speak of.
+     */
+    private fun publishWetStroke(stroke: Stroke?) {
+        // Pen back down under the wand: the held batch goes solid again, so a long stroke cannot
+        // outlive a fade that had already started.
+        if (wandEnabled && stroke != null && stroke !== wandLive) {
+            wandLive = stroke
+            solidifyFading()
+        }
+        if (stroke == null) {
+            forgetWetStroke()
+            scene.setWetParts(emptyList(), Rect(0.0, 0.0, 0.0, 0.0))
+            return
+        }
+        val ribbon = stroke.wetRibbon
+        if (ribbon == null || !stroke.wetCacheable) {
+            forgetWetStroke()
+            val predicted = interaction.predictedTailPoints
+            if (ribbon != null && predicted.isNotEmpty() && canExtendWithPrediction(stroke)) {
+                // A highlighter, pencil or other whole-mesh pen: lay the tail into the same mesh so
+                // its multiply/translucent cover stays one layer and the join cannot seam.
+                val part = meshWholeWithPrediction(stroke, ribbon, predicted)
+                if (part != null) {
+                    scene.setWetParts(listOf(part), wetBoundsWithPrediction(stroke, ribbon, predicted))
+                    return
+                }
+            }
+            val meshed = ItemMesher.mesh(stroke) ?: return
+            // Every run, not just the first: a neon stroke is a halo, a lit body and a white core,
+            // and keeping only one of them left the wet stroke invisible until the pen lifted.
+            scene.setWetParts(meshed.parts, meshed.bounds)
+            return
+        }
+        if (wetOwner !== stroke) {
+            forgetWetStroke()
+            wetOwner = stroke
+            scene.setWetParts(emptyList(), Rect(0.0, 0.0, 0.0, 0.0))
+        }
+        var bounds = stroke.paintBounds()
+        val settled = ribbon.settledCount
+        if (settled - wetMeshed >= WET_RUN_POINTS) {
+            val from = (wetMeshed - 1).coerceAtLeast(0)
+            ItemMesher.meshRun(stroke, ribbon, from, settled - from, wetArc)?.let {
+                scene.appendWetRun(it, bounds)
+            }
+            for (k in from + 1 until settled) {
+                wetArc += kotlin.math.hypot(ribbon.cx(k) - ribbon.cx(k - 1), ribbon.cy(k) - ribbon.cy(k - 1))
+            }
+            wetMeshed = settled
+        }
+        val tailFrom = (wetMeshed - 1).coerceAtLeast(0)
+        val predicted = interaction.predictedTailPoints
+        val tail = if (predicted.isNotEmpty() && canExtendWithPrediction(stroke)) {
+            // The smoothed tip trails the nib by the filter's residual. Extend the run with the
+            // predictor's look-ahead so the ink reaches the hand, in the same mesh and colour, so
+            // there is no second layer at the join and no seam under the tip.
+            val lastHw = ribbon.hw(ribbon.pointCount - 1)
+            val live = LiveTailRibbon(
+                base = ribbon,
+                from = tailFrom,
+                tail = predicted,
+                halfWidth = lastHw,
+                maxTailDist = PREDICTED_TAIL_MAX_SCREEN_PX / viewport.zoom,
+                minTailStep = PREDICTED_TAIL_MIN_STEP_SCREEN_PX / viewport.zoom,
+            )
+            if (live.tailPoints().isEmpty()) {
+                ItemMesher.meshRun(stroke, ribbon, tailFrom, ribbon.pointCount - tailFrom, wetArc)
+            } else {
+                bounds = bounds.union(
+                    Rect.bounding(live.tailPoints()).outset(lastHw),
+                )
+                ItemMesher.meshRun(stroke, live, 0, live.pointCount, wetArc)
+            }
+        } else {
+            ItemMesher.meshRun(stroke, ribbon, tailFrom, ribbon.pointCount - tailFrom, wetArc)
+        }
+        scene.setWetTail(tail, bounds)
+    }
+
+    /**
+     * Whether the predictor's look-ahead can be laid into this stroke's wet mesh. Dashed and dotted
+     * pens have a broken rhythm that a solid extension would contradict, and neon's halos are built
+     * from separate passes whose blur would compound at the join; those keep their unextended tip.
+     */
+    private fun canExtendWithPrediction(stroke: Stroke): Boolean =
+        !stroke.straight &&
+            !stroke.config.neon &&
+            stroke.tool != Tool.DASHED &&
+            stroke.config.texture != StrokeTexture.DASHED &&
+            stroke.config.texture != StrokeTexture.DOTTED &&
+            stroke.config.texture != StrokeTexture.NEON
+
+    /**
+     * Mesh a whole-stroke pen (one the runs cannot be laid over each other for) together with the
+     * predicted tail, in one part. Used by the highlighter and other translucent inks, where two
+     * parts would composite the overlap twice at the join.
+     */
+    private fun meshWholeWithPrediction(
+        stroke: Stroke,
+        ribbon: WetRibbon,
+        predicted: List<Pt>,
+    ): MeshPart? {
+        // The spline pump queues the last few points until the next sample; geometry() drains them,
+        // and this mesh has to see the same tip the unextended path would.
+        ribbon.flushPending()
+        if (ribbon.pointCount < 2) return null
+        val lastHw = ribbon.hw(ribbon.pointCount - 1)
+        val live = LiveTailRibbon(
+            base = ribbon,
+            from = 0,
+            tail = predicted,
+            halfWidth = lastHw,
+            maxTailDist = PREDICTED_TAIL_MAX_SCREEN_PX / viewport.zoom,
+            minTailStep = PREDICTED_TAIL_MIN_STEP_SCREEN_PX / viewport.zoom,
+        )
+        if (live.tailPoints().isEmpty()) return null
+        val mesh = StrokeTessellator.tessellate(live, StrokeTessellator.DEFAULT_TOLERANCE)
+        if (mesh.isEmpty) return null
+        return MeshPart(mesh, stroke.renderColor, ItemMesher.passFor(stroke))
+    }
+
+    /** Paint bounds grown to the predicted tip, so a masked (translucent/multiply) tail is not clipped. */
+    private fun wetBoundsWithPrediction(
+        stroke: Stroke,
+        ribbon: WetRibbon,
+        predicted: List<Pt>,
+    ): Rect {
+        val half = if (ribbon.pointCount > 0) ribbon.hw(ribbon.pointCount - 1) else 0.0
+        return stroke.paintBounds().union(Rect.bounding(predicted).outset(half))
+    }
+
+    private fun forgetWetStroke() {
+        wetOwner = null
+        wetMeshed = 0
+        wetArc = 0.0
+    }
+
+    /**
+     * Rebuild the chrome drawn over the content: the selection box and handles, or whichever
+     * marquee a drag is sweeping out. It goes through the same transient buffer the wet stroke
+     * uses, since inking and selecting can never happen at once.
+     */
+    private fun publishOverlay() {
+        hasSelection = !selection.isEmpty
+        refreshSelectionMenu()
+        val accent = palette?.accent ?: InkPalette.DEFAULT
+        val zoom = viewport.zoom
+        val parts = ArrayList<MeshPart>(3)
+        var bounds: Rect? = null
+        interaction.bandRect?.let {
+            parts += OverlayTessellator.band(it, zoom, accent, StrokeTessellator.DEFAULT_TOLERANCE)
+            bounds = it.outset(4.0 / zoom)
+        }
+        if (interaction.lassoPoints.size >= 2) {
+            val points = interaction.lassoPoints.toList()
+            parts += OverlayTessellator.lasso(points, zoom, accent, StrokeTessellator.DEFAULT_TOLERANCE)
+            bounds = Rect.bounding(points).outset(4.0 / zoom)
+        }
+        selection.box?.let { box ->
+            parts += OverlayTessellator.selection(box, zoom, accent, StrokeTessellator.DEFAULT_TOLERANCE)
+            val b = OverlayTessellator.selectionBounds(box, zoom)
+            bounds = bounds?.union(b) ?: b
+        }
+        if (parts.isEmpty()) {
+            scene.setWet(null, InkPalette.DEFAULT, InkPass.OPAQUE, Rect(0.0, 0.0, 0.0, 0.0))
+        } else {
+            scene.setWetParts(parts, bounds ?: Rect(0.0, 0.0, 0.0, 0.0))
+        }
+        view.publish()
+    }
+
+    /** A finished selection drag: record it, if it changed anything. */
+    private fun commitSelection(command: com.pnotes.core.history.Command?) {
+        if (command == null) return
+        history.push(command)
+        markDirty()
+        refresh()
+    }
+
+    /** The shape being dragged out, drawn live over the committed geometry like a wet stroke. */
+    private fun publishPendingShape(shape: ShapeItem?) {
+        if (shape == null) {
+            scene.setWet(null, InkPalette.DEFAULT, InkPass.OPAQUE, Rect(0.0, 0.0, 0.0, 0.0))
+            return
+        }
+        val meshed = ItemMesher.mesh(shape) ?: return
+        scene.setWetParts(meshed.parts, meshed.bounds)
+    }
+
+    /** Add a finished item and record the edit, the common tail of every creating tool. */
+    private fun commitItem(item: CanvasItem) {
+        committingWetStroke = true
+        try {
+            document.add(item)
+        } finally {
+            committingWetStroke = false
+        }
+        history.push(AddCanvasItem(document, item))
+        markDirty()
+        refresh()
+    }
+
+    /**
+     * Insert an encoded image, centred on [atContent] or on the middle of the view. The bytes are
+     * written to a file and the item keeps only that path, so a canvas full of photographs never
+     * holds their pixels: each is decoded when drawn, at the size the screen can show.
+     */
+    fun insertImage(bytes: ByteArray, atContent: com.pnotes.core.geometry.Pt? = null): Boolean {
+        val dir = imageDir ?: return false
+        val file = runCatching {
+            java.io.File.createTempFile("img", null, dir).apply { writeBytes(bytes) }
+        }.getOrNull()
+        val size = file?.let { imageCodec.probeFile(it.path) }
+        if (file == null || size == null || size.width <= 0 || size.height <= 0) {
+            file?.delete()
+            return false
+        }
+        // Land it at a comfortable size for the current view rather than at its pixel size, which
+        // on an unbounded canvas would be arbitrary.
+        val visible = viewport.visibleContentRect()
+        val maxW = visible.w * 0.6
+        val maxH = visible.h * 0.6
+        val scale = minOf(1.0, maxW / size.width, maxH / size.height)
+        val w = size.width * scale
+        val h = size.height * scale
+        val centre = atContent ?: viewport.centerContent
+        val rect = Rect(centre.x - w / 2.0, centre.y - h / 2.0, w, h)
+        commitItem(ImageItem(ImageData(file, size.width, size.height), rect))
+        return true
+    }
+
+    /** Pen up on an eraser drag: the whole drag is one undoable edit, however much it cut. */
+    private fun commitErase(session: EraseSession) {
+        val command = session.buildCommand() ?: return
+        history.push(command)
+        markDirty()
+        refresh()
+        view.publish()
+    }
+
+    /** Pen up: the finished stroke joins the document, and the edit joins the undo stack. */
+    private fun commitStroke(stroke: Stroke) {
+        // The commit message releases the wet buffers on the GL thread, so forget what was in them.
+        forgetWetStroke()
+        if (wandEnabled && stroke.tool.isStroke) {
+            holdEphemeral(stroke)
+            return
+        }
+        commitItem(stroke)
+    }
+
+    // --- disappearing ink (magic wand) ---
+
+    /** A held stroke and the triangles it was meshed into once, recoloured as the batch fades. */
+    private class FadingStroke(val stroke: Stroke, val meshed: MeshedItem)
+
+    private val fadingStrokes = mutableListOf<FadingStroke>()
+    private var fadeAlpha = 1.0
+    private var fading = false
+    private var fadeStartMs = 0L
+    private var fadeTimer: Runnable? = null
+
+    /** The stroke the wand last saw under the pen, so the next one can re-solidify the batch. */
+    private var wandLive: Stroke? = null
+    private val fadeHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    private val choreographer by lazy { android.view.Choreographer.getInstance() }
+    private val fadeFrame = android.view.Choreographer.FrameCallback { t -> stepFade(t) }
+
+    /**
+     * Pen up under the wand: hold the stroke rather than file it.
+     *
+     * It is handed to the renderer like any committed item, but never to the document — so it
+     * draws, culls and blends exactly as ink does while touching no model, no history, no autosave
+     * and nothing on disk. It is meshed once here and only recoloured as it melts, so a fading
+     * batch costs an upload a frame instead of a tessellation.
+     */
+    private fun holdEphemeral(stroke: Stroke) {
+        val meshed = ItemMesher.mesh(stroke)
+        if (meshed == null || meshed.isEmpty) {
+            scene.setWetParts(emptyList(), Rect(0.0, 0.0, 0.0, 0.0))
+            view.publish()
+            return
+        }
+        fadingStrokes.add(FadingStroke(stroke, meshed))
+        // clearsWet releases the buffer under the pen in the same message this stroke arrives in,
+        // so no frame can fall between the two and blink.
+        scene.upsert(stroke, meshed.parts, meshed.bounds, clearsWet = true)
+        solidifyFading()
+        view.publish()
+    }
+
+    /** Put the batch back to full strength and restart the hold, so it melts only once drawing
+     *  has paused. A no-op when nothing is being held. */
+    private fun solidifyFading() {
+        if (fadingStrokes.isEmpty()) return
+        fading = false
+        if (fadeAlpha != 1.0) {
+            fadeAlpha = 1.0
+            republishFading()
+        }
+        scheduleFade()
+    }
+
+    /** Drop the held batch and stop any pending or running fade. */
+    private fun clearFading() {
+        cancelFadeTimer()
+        fading = false
+        fadeAlpha = 1.0
+        wandLive = null
+        if (fadingStrokes.isEmpty()) return
+        for (f in fadingStrokes) scene.remove(f.stroke)
+        fadingStrokes.clear()
+        view.publish()
+    }
+
+    private fun scheduleFade() {
+        cancelFadeTimer()
+        val r = Runnable { startFade() }
+        fadeTimer = r
+        fadeHandler.postDelayed(r, InteractionController.WAND_HOLD_MS)
+    }
+
+    private fun cancelFadeTimer() {
+        fadeTimer?.let { fadeHandler.removeCallbacks(it) }
+        fadeTimer = null
+    }
+
+    private fun startFade() {
+        fadeTimer = null
+        if (fadingStrokes.isEmpty()) return
+        fading = true
+        fadeAlpha = 1.0
+        fadeStartMs = System.nanoTime() / 1_000_000L
+        choreographer.postFrameCallback(fadeFrame)
+    }
+
+    private fun stepFade(frameTimeNanos: Long) {
+        if (!fading) return
+        val now = frameTimeNanos / 1_000_000L
+        val t = ((now - fadeStartMs) / InteractionController.WAND_FADE_MS).coerceIn(0.0, 1.0)
+        fadeAlpha = (1.0 - t) * (1.0 - t) // ease-out, so the batch melts rather than blinking off
+        if (t >= 1.0) {
+            for (f in fadingStrokes) scene.remove(f.stroke)
+            fadingStrokes.clear()
+            fadeAlpha = 1.0
+            fading = false
+        } else {
+            republishFading()
+        }
+        view.publish()
+        if (fading) choreographer.postFrameCallback(fadeFrame)
+    }
+
+    /** Re-file every held stroke at the current alpha, from the triangles it already has. */
+    private fun republishFading() {
+        for (f in fadingStrokes) {
+            scene.upsert(f.stroke, f.meshed.parts.map { fadedPart(it, fadeAlpha) }, f.meshed.bounds)
+        }
+    }
+
+    /** One meshed run at [alpha] of its own opacity; neon's halos dim with the ink they come from. */
+    private fun fadedPart(part: MeshPart, alpha: Double): MeshPart {
+        if (alpha >= 1.0) return part
+        val g = part.glow
+        return MeshPart(
+            part.mesh,
+            part.color.scaledAlpha(alpha),
+            part.pass,
+            if (g == null) {
+                null
+            } else {
+                GlowSpec(
+                    g.wideRadius, g.wideAlpha * alpha, g.tightRadius, g.tightAlpha * alpha,
+                    g.bodyColor.scaledAlpha(alpha), g.coreColor.scaledAlpha(alpha), g.coreScale,
+                )
+            },
+        )
+    }
+
+    private fun Rgba.scaledAlpha(f: Double): Rgba = withAlpha((a * f).toInt().coerceIn(0, 255))
+
+    private fun markDirty() {
+        document.dirty = true
+        onContentChanged?.invoke()
+    }
+
+    /** Adopt the app's pen preferences, so the canvas and the paged note behave the same. */
+    fun applyInputPrefs(fingerDraws: Boolean, penButtonTool: Tool?, zoomLockPan: String = "single") {
+        interaction.fingerDraws = fingerDraws
+        interaction.penButtonTool = penButtonTool
+        interaction.zoomLockPan = zoomLockPan
+    }
+
+    fun toggleZoomLock() {
+        zoomLocked = !zoomLocked
+        interaction.zoomLocked = zoomLocked
+    }
+
+    /** Adopt the configured zoom range, then pull the current zoom back into it. */
+    fun applyZoomRange(minPercent: Int, maxPercent: Int) {
+        viewport.minZoom = (minPercent / 100.0).coerceAtLeast(0.0001)
+        viewport.maxZoom = (maxPercent / 100.0).coerceAtLeast(viewport.minZoom)
+        viewport.clampZoom()
+        onViewChanged()
+        view.publish()
+    }
+
+    /** Keyboard shortcuts. Only the ones that mean something without pages. */
+    fun handleKeyDown(e: android.view.KeyEvent): Boolean {
+        val ctrl = e.isCtrlPressed
+        val shift = e.isShiftPressed
+        when {
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_Z && shift -> redo()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_Z -> undo()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_Y -> redo()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_A -> selectAll()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_C -> copySelection()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_X -> cutSelection()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_V -> pasteClipboard()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_D -> duplicateSelection()
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_0 -> zoomToFit()
+            ctrl && (e.keyCode == android.view.KeyEvent.KEYCODE_PLUS || e.keyCode == android.view.KeyEvent.KEYCODE_EQUALS) -> zoomBy(ZOOM_STEP)
+            ctrl && e.keyCode == android.view.KeyEvent.KEYCODE_MINUS -> zoomBy(1.0 / ZOOM_STEP)
+            e.keyCode == android.view.KeyEvent.KEYCODE_DEL || e.keyCode == android.view.KeyEvent.KEYCODE_FORWARD_DEL -> deleteSelection()
+            e.keyCode == android.view.KeyEvent.KEYCODE_ESCAPE -> interaction.clearSelection()
+            else -> return false
+        }
+        return true
+    }
+
+    /** Select everything unlocked on the canvas, which on an unbounded one means most of it. */
+    fun selectAll() {
+        if (document.isEmpty) return
+        selection.select(document.items.filter { !it.locked })
+        armTool(Tool.SELECT)
+        publishOverlay()
+    }
+
+    fun zoomBy(factor: Double) {
+        if (zoomLocked) return
+        viewport.zoomAroundCenter(viewport.zoom * factor)
+        onViewChanged()
+        view.publish()
+    }
+
+    private var palette: Palette? = null
+
+    /** Adopt the chrome's palette, so the paper and the selection accent match the rest of the app. */
+    fun applyPalette(palette: Palette) {
+        this.palette = palette
+        view.paperColor = document.background.paperColor ?: palette.paper
+        view.accent = palette.accent
+    }
+
+    // --- documents ---
+
+    fun newCanvas() {
+        replaceDocument(InfiniteDocument())
+    }
+
+    fun replaceDocument(next: InfiniteDocument) {
+        clearFading() // whatever was melting belongs to the outgoing canvas
+        document.listener = null
+        document = next
+        next.listener = modelListener
+        selection = CanvasSelection(next)
+        hasSelection = false
+        history.clear()
+        interaction.resetGestureState()
+        view.background = next.background
+        view.paperColor = next.background.paperColor ?: view.paperColor
+        rebuildScene()
+        appliedInitialView = false
+        applyInitialView()
+        refresh()
+        view.publish()
+    }
+
+    // --- view ---
+
+    private var appliedInitialView = false
+
+    /**
+     * Put the canvas where it was left, or on its content, or at the origin. Runs once the viewport
+     * has a size, since both fitting and centring need one.
+     */
+    private fun applyInitialView() {
+        if (appliedInitialView) return
+        if (viewport.widthPx <= 0 || viewport.heightPx <= 0) return
+        appliedInitialView = true
+        val saved = document.lastView
+        when {
+            saved != null -> viewport.apply(saved)
+            else -> document.contentBounds()?.let { viewport.fit(it) } ?: viewport.centerOn(0.0, 0.0)
+        }
+        onViewChanged()
+        view.publish()
+    }
+
+    /** Frame every item on the canvas. */
+    fun zoomToFit() {
+        if (zoomLocked) return
+        val bounds = document.contentBounds()
+        if (bounds == null) {
+            viewport.zoom = 1.0
+            viewport.centerOn(0.0, 0.0)
+        } else {
+            viewport.fit(bounds)
+        }
+        onViewChanged()
+        view.publish()
+    }
+
+    fun jumpTo(waypoint: Waypoint) {
+        viewport.apply(waypoint)
+        onViewChanged()
+        view.publish()
+    }
+
+    /** Save the current view under [name], replacing any waypoint that already has it. */
+    fun saveWaypoint(name: String) {
+        val clean = Waypoint.sanitizeName(name)
+        if (clean.isEmpty()) return
+        document.waypoints.removeAll { it.name.equals(clean, ignoreCase = true) }
+        document.waypoints.add(viewport.toWaypoint(clean))
+        waypoints = document.waypoints.toList()
+        markDirty()
+    }
+
+    fun removeWaypoint(waypoint: Waypoint) {
+        document.waypoints.removeAll { it.name == waypoint.name }
+        waypoints = document.waypoints.toList()
+        markDirty()
+    }
+
+    /** A tap on the minimap: centre the view on whatever was tapped. */
+    fun minimapTap(vx: Double, vy: Double): Boolean {
+        if (!minimapVisible) return false
+        val panel = Minimap.panel(viewport.widthPx, viewport.heightPx)
+        if (!panel.contains(Pt(vx, vy))) return false
+        val extent = Minimap.mappedExtent(document.contentBounds(), viewport.visibleContentRect())
+        val target = Minimap.toContent(Pt(vx, vy), extent, panel)
+        viewport.centerOn(target.x, target.y)
+        onViewChanged()
+        view.publish()
+        return true
+    }
+
+    fun setBackground(background: CanvasBackground) {
+        document.background = background
+        view.background = background
+        view.paperColor = background.paperColor ?: view.paperColor
+        markDirty()
+    }
+
+    // --- history ---
+
+    // History moves geometry the selection box cannot follow: an undone rotation puts the ink back
+    // upright and leaves the box turned over it. The paged editor drops the selection for the same
+    // reason, so both surfaces behave alike.
+    fun undo() {
+        history.undo()
+        interaction.clearSelection()
+        markDirty()
+        refresh()
+        view.publish()
+    }
+
+    fun redo() {
+        history.redo()
+        interaction.clearSelection()
+        markDirty()
+        refresh()
+        view.publish()
+    }
+
+    private fun onViewChanged() {
+        document.lastView = viewport.toWaypoint()
+        zoomPercent = Math.round(viewport.zoom * 100).toInt()
+        // The menu is anchored in viewport pixels, so a pan or a zoom moves it.
+        refreshSelectionMenu()
+        // The minimap maps everything drawn, so its extent moves with the content, not the view.
+        view.contentBounds = document.contentBounds()
+    }
+
+    private fun refresh() {
+        title = document.title
+        canUndo = history.canUndo
+        canRedo = history.canRedo
+        waypoints = document.waypoints.toList()
+        view.contentBounds = document.contentBounds()
+    }
+
+    companion object {
+        /** Zoom step for the keyboard, matching a comfortable notch of a pinch. */
+        const val ZOOM_STEP = 1.25
+
+        /** Content pixels a duplicate lands from its original, so the copy is visibly a copy. */
+        const val DUPLICATE_NUDGE = 24.0
+
+        /**
+         * Ribbon points that have to settle before the wet stroke gives the scene another run.
+         * It sets both halves of the cost: the tail re-meshed each frame is at most this plus the
+         * pen's own lookahead, and the runs a stroke leaves behind it are its length over this.
+         * Uploading each point the moment it settled would be one buffer slice per sample.
+         */
+        const val WET_RUN_POINTS = 128
+
+        /**
+         * Longest predicted extension the wet tail may draw, in screen pixels. At any zoom this is
+         * the same visible reach; past it a predictor glitch would read as ink thrown off the nib.
+         */
+        const val PREDICTED_TAIL_MAX_SCREEN_PX = 64.0
+
+        /** Shortest accepted step between predicted points, in screen pixels. */
+        const val PREDICTED_TAIL_MIN_STEP_SCREEN_PX = 0.2
+
+        /** The box that stands in for a vector image while it meshes, or where it cannot be drawn. */
+        val VECTOR_PLACEHOLDER = Rgba(128, 128, 128, 36)
+    }
+}

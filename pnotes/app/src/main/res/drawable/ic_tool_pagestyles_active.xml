@@ -1,0 +1,23 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Equalizer Rails & Knobs (Themed Stroke) -->
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="2.0"
+        android:strokeLineCap="round"
+        android:pathData="M4,21V14M4,10V3M12,21V12M12,8V3M20,21V16M20,12V3" />
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.0"
+        android:strokeLineCap="round"
+        android:pathData="M4,21V14M4,10V3M12,21V12M12,8V3M20,21V16M20,12V3" />
+    <!-- Slider Knobs (Dynamic Fill & Themed Stroke) -->
+    <path
+        android:fillColor="@color/tool_active_white_part"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.2"
+        android:pathData="M1,10H7V14H1ZM9,8H15V12H9ZM17,12H23V16H17Z" />
+</vector>

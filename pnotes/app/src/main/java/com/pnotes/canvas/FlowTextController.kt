@@ -1,0 +1,634 @@
+﻿package com.pnotes.canvas
+
+import android.os.Handler
+import android.os.Looper
+import com.pnotes.core.geometry.Pt
+import com.pnotes.core.geometry.Rect
+import com.pnotes.core.history.AddPageAuto
+import com.pnotes.core.history.Command
+import com.pnotes.core.history.CompositeCommand
+import com.pnotes.core.history.FlowEditParagraph
+import com.pnotes.core.history.History
+import com.pnotes.core.history.ParaSnapshot
+import com.pnotes.core.model.Page
+import com.pnotes.core.text.CharStyle
+import com.pnotes.core.text.FlowEditor
+import com.pnotes.core.text.FlowFrame
+import com.pnotes.core.text.FlowHit
+import com.pnotes.core.text.FlowPos
+import com.pnotes.core.text.FlowRange
+import com.pnotes.core.text.Paragraph
+import com.pnotes.core.text.TextFlow
+import com.pnotes.core.text.wordRangeAt
+import kotlin.math.abs
+
+/**
+ * The inline-flow caret: session lifecycle (lift the flow for live drawing, show
+ * the IME), tap-to-caret with empty-line fill below the text, drag selection,
+ * double-tap word selection, checkbox toggling, typing bursts coalesced into one
+ * undo step, and automatic page append when typing overflows the last page.
+ * Owned by the Editor; the InteractionController routes TEXT-tool gestures here.
+ */
+class FlowTextController(
+    private val state: CanvasState,
+    private val history: History,
+    private val flow: () -> TextFlow,
+    private val frame: () -> FlowFrame?,
+    private val slotHeight: () -> Double,
+    /** A mutation landed; republish the layout ([live] = a caret session is open). */
+    private val onChanged: (live: Boolean) -> Unit,
+    /** A coalesced burst (one undo step) was pushed: refresh chrome/autosave/stream. */
+    private val onFlushed: () -> Unit,
+    private val onSessionChanged: (Boolean) -> Unit,
+    private val onViewChanged: () -> Unit,
+    private val requestRender: () -> Unit,
+) {
+    var active = false
+        private set
+
+    var selection: FlowRange = FlowRange.caret(FlowPos.START)
+        private set(value) {
+            field = value
+            onCaretChanged()
+        }
+
+    /** Fired whenever the caret/selection moves (the host's format bar keys on it). */
+    var onCaretChanged: () -> Unit = {}
+
+    /** Style for the next typed run (set by the format bar on a collapsed caret). */
+    var pendingStyle: CharStyle? = null
+
+    /** Installed by the input layer to mirror caret/selection moves to the IME. */
+    var imeSync: () -> Unit = {}
+
+    /** Installed by the input layer: a committed edit landed (reconcile the IME mirror). */
+    var onEdited: () -> Unit = {}
+
+    /** Installed by the input layer: re-show the soft keyboard (a caret tap wants it back). */
+    var requestIme: () -> Unit = {}
+
+    /** Long-press armed a selection: a short haptic tick. */
+    var onHaptic: () -> Unit = {}
+
+    /** A long-press gesture finished: open the editing context menu at this viewport point. */
+    var onContextMenu: (Pt) -> Unit = {}
+
+    /** Metrics of the font [pendingStyle] resolves to, so the caret previews it before typing. */
+    var caretMetricsFor: ((CharStyle) -> com.pnotes.core.pal.LineMetrics)? = null
+
+    private val handler = Handler(Looper.getMainLooper())
+    private val idleFlush = Runnable { flushBurst() }
+
+    // one coalesced typing burst: a single paragraph edited since the last flush
+    private var burstPara: Paragraph? = null
+    private var burstBefore: ParaSnapshot? = null
+    private val burstExtras = mutableListOf<Command>()
+
+    // press/drag gesture state: a short drag pans the document (handed back to the
+    // interaction controller); selection arms only after a LONG PRESS, then extends by drag
+    private var pressAnchor: FlowPos? = null
+    private var pressHit: FlowHit? = null
+    private var pressViewport = Pt(0.0, 0.0)
+    private var pressContent = Pt(0.0, 0.0)
+    private var selectionArmed = false
+    private var armedAnchor: FlowRange? = null
+    private var lastTapAtMs = 0L
+    private var lastTapViewport = Pt(0.0, 0.0)
+    private val longPressRun = Runnable { onLongPressFired() }
+
+    // selection handles + edge autoscroll while extending a selection
+    private enum class Handle { START, END }
+    private var draggingHandle: Handle? = null
+    private var handleFixed: FlowPos? = null
+    private var handleGrabOffset = Pt(0.0, 0.0)
+    private var lastDragViewport: Pt? = null
+    private var autoscrollVel = 0.0
+    private val autoscrollRun = object : Runnable {
+        override fun run() {
+            val vp = lastDragViewport ?: return
+            if (autoscrollVel == 0.0) return
+            state.scrollBy(0.0, autoscrollVel)
+            onViewChanged()
+            updateDragSelection(vp)
+            requestRender()
+            handler.postDelayed(this, AUTOSCROLL_TICK_MS)
+        }
+    }
+
+    // --- session ---
+
+    fun startSession(range: FlowRange) {
+        if (active) {
+            selection = range
+            imeSync()
+            requestRender()
+            return
+        }
+        active = true
+        selection = range
+        state.flowLifted = true
+        invalidateFlowPages()
+        onSessionChanged(true)
+        requestRender()
+    }
+
+    fun endSession() {
+        handler.removeCallbacks(longPressRun)
+        stopAutoscroll()
+        draggingHandle = null
+        handleFixed = null
+        if (!active) return
+        flushBurst()
+        active = false
+        state.flowLifted = false
+        invalidateFlowPages()
+        onSessionChanged(false)
+        requestRender()
+    }
+
+    private fun invalidateFlowPages() {
+        val f = frame() ?: return
+        val pages = state.document.pages
+        f.pagesWithLines().forEach { i -> pages.getOrNull(i)?.let(state::invalidatePage) }
+    }
+
+    // --- gestures (routed by the InteractionController while the TEXT tool is armed) ---
+
+    fun pressAt(content: Pt, viewport: Pt) {
+        pressViewport = viewport
+        pressContent = content
+        selectionArmed = false
+        armedAnchor = null
+        // Grabbing a selection handle resizes the selection from its other end.
+        if (active && !selection.collapsed) {
+            grabHandle(viewport)?.let { h ->
+                val r = selection.normalized()
+                draggingHandle = h
+                handleFixed = if (h == Handle.START) r.end else r.start
+                val moving = if (h == Handle.START) r.start else r.end
+                handleGrabOffset = caretAnchorViewport(moving)
+                    ?.let { Pt(it.x - viewport.x, it.y - viewport.y) } ?: Pt(0.0, 0.0)
+                return
+            }
+        }
+        val (pi, local) = pagePointAt(content) ?: return
+        val hit = frame()?.hitTest(pi, local) ?: return
+        pressHit = hit
+        pressAnchor = when (hit) {
+            is FlowHit.Caret -> hit.pos
+            is FlowHit.Checkbox -> FlowPos(hit.paraIndex, 0)
+            FlowHit.BeyondEnd -> flow().endPos()
+        }
+        handler.removeCallbacks(longPressRun)
+        handler.postDelayed(longPressRun, LONG_PRESS_MS)
+    }
+
+    /** Long press while still: arm selection on the word under the finger (the release opens the menu). */
+    private fun onLongPressFired() {
+        val anchor = pressAnchor ?: return
+        if (!active) startSession(FlowRange.caret(anchor))
+        if (pressHit == FlowHit.BeyondEnd) {
+            // Below the text: place the caret on the pressed line (empty-line fill) instead.
+            tapBeyondEnd(pressContent)
+            selectionArmed = true
+            armedAnchor = FlowRange.caret(selection.end)
+        } else {
+            val word = wordRangeAt(flow(), anchor).normalized()
+            selectionArmed = true
+            armedAnchor = word
+            selection = if (word.collapsed) FlowRange.caret(anchor) else word
+        }
+        onHaptic()
+        imeSync()
+        requestRender()
+    }
+
+    /**
+     * Drag while pressed. A grabbed handle or an armed (long-pressed) drag extends
+     * the selection, autoscrolling near the viewport edges; a plain drag past the
+     * slop is a document pan: returns true so the interaction controller hands the
+     * rest of the gesture to its pan mode.
+     */
+    fun dragTo(content: Pt, viewport: Pt): Boolean {
+        if (draggingHandle != null || selectionArmed) {
+            lastDragViewport = viewport
+            updateDragSelection(viewport)
+            updateAutoscroll(viewport)
+            requestRender()
+            return false
+        }
+        if (viewport.distanceTo(pressViewport) <= DRAG_SLOP) return false
+        handler.removeCallbacks(longPressRun)
+        pressAnchor = null
+        pressHit = null
+        return true
+    }
+
+    /** Re-derive the moving selection end from the finger's viewport point. */
+    private fun updateDragSelection(viewport: Pt) {
+        if (draggingHandle != null) {
+            // The teardrop hangs below its line: keep the grip offset from the grab, so
+            // the caret follows the line the handle marks, not the line under the finger.
+            val at = Pt(viewport.x + handleGrabOffset.x, viewport.y + handleGrabOffset.y)
+            val pos = caretPosAt(state.viewportToContent(at)) ?: return
+            selection = FlowRange(handleFixed ?: return, pos)
+            return
+        }
+        val pos = caretPosAt(state.viewportToContent(viewport)) ?: return
+        val a = armedAnchor ?: FlowRange.caret(pressAnchor ?: return)
+        selection = if (pos < a.start) FlowRange(a.end, pos) else FlowRange(a.start, pos)
+    }
+
+    /** Scroll while the finger sits in the top/bottom edge zone, speed scaling with depth. */
+    private fun updateAutoscroll(viewport: Pt) {
+        val zone = AUTOSCROLL_ZONE_DP * state.devicePxPerDp
+        val maxV = AUTOSCROLL_MAX_DP * state.devicePxPerDp
+        val vh = state.viewportH.toDouble()
+        val vel = when {
+            viewport.y < zone -> -maxV * ((zone - viewport.y) / zone).coerceAtMost(1.0)
+            viewport.y > vh - zone -> maxV * ((viewport.y - (vh - zone)) / zone).coerceAtMost(1.0)
+            else -> 0.0
+        }
+        val wasStill = autoscrollVel == 0.0
+        autoscrollVel = vel
+        if (vel == 0.0) {
+            handler.removeCallbacks(autoscrollRun)
+        } else if (wasStill) {
+            handler.removeCallbacks(autoscrollRun)
+            handler.post(autoscrollRun)
+        }
+    }
+
+    private fun stopAutoscroll() {
+        autoscrollVel = 0.0
+        lastDragViewport = null
+        handler.removeCallbacks(autoscrollRun)
+    }
+
+    fun release(content: Pt, viewport: Pt, timeMs: Long) {
+        handler.removeCallbacks(longPressRun)
+        stopAutoscroll()
+        val hit = pressHit
+        pressHit = null
+        pressAnchor = null
+        if (draggingHandle != null) {
+            draggingHandle = null
+            handleFixed = null
+            imeSync()
+            requestRender()
+            onContextMenu(viewport)
+            return
+        }
+        if (selectionArmed) {
+            selectionArmed = false
+            armedAnchor = null
+            imeSync()
+            requestRender()
+            onContextMenu(viewport)
+            return
+        }
+        when (hit) {
+            null -> Unit
+            is FlowHit.Checkbox -> {
+                flushBurst()
+                commitEdit(FlowEditor(flow()).toggleChecked(hit.paraIndex), null)
+            }
+            is FlowHit.Caret -> {
+                val isDouble = timeMs - lastTapAtMs < DOUBLE_TAP_MS &&
+                    viewport.distanceTo(lastTapViewport) < DOUBLE_TAP_SLOP
+                lastTapAtMs = timeMs
+                lastTapViewport = viewport
+                if (active) placeCaret(hit.pos) else startSession(FlowRange.caret(hit.pos))
+                requestIme()
+                if (isDouble) {
+                    selection = wordRangeAt(flow(), hit.pos)
+                    imeSync()
+                    requestRender()
+                }
+            }
+            FlowHit.BeyondEnd -> {
+                lastTapAtMs = timeMs
+                lastTapViewport = viewport
+                tapBeyondEnd(content)
+                requestIme()
+            }
+        }
+    }
+
+    /** Place the caret from a programmatic point (menu paste): tap semantics, no gestures. */
+    fun tapAt(content: Pt) {
+        val (pi, local) = pagePointAt(content) ?: return
+        when (val hit = frame()?.hitTest(pi, local)) {
+            null -> Unit
+            is FlowHit.Caret ->
+                if (active) placeCaret(hit.pos) else startSession(FlowRange.caret(hit.pos))
+            is FlowHit.Checkbox ->
+                if (active) placeCaret(FlowPos(hit.paraIndex, 0)) else startSession(FlowRange.caret(FlowPos(hit.paraIndex, 0)))
+            FlowHit.BeyondEnd -> tapBeyondEnd(content)
+        }
+    }
+
+    /** A tap below the flow end: fill the gap with empty lines so the caret lands there. */
+    private fun tapBeyondEnd(content: Pt) {
+        val (pi, local) = pagePointAt(content) ?: return
+        val f = frame() ?: return
+        var count = f.emptyLinesToReach(pi, local.y, slotHeight())
+        if (flow().paragraphs.isEmpty() && count <= 0) count = 1
+        if (!active) startSession(FlowRange.caret(flow().endPos()))
+        if (count <= 0) {
+            placeCaret(flow().endPos())
+            return
+        }
+        flushBurst()
+        val (cmd, caret) = FlowEditor(flow()).appendEmptyLines(count)
+        commitEdit(cmd, caret)
+    }
+
+    fun placeCaret(pos: FlowPos) {
+        flushBurst()
+        pendingStyle = null
+        selection = FlowRange.caret(pos)
+        imeSync()
+        ensureCaretVisible()
+        requestRender()
+    }
+
+    fun setSelection(range: FlowRange, syncIme: Boolean = true) {
+        selection = range
+        if (syncIme) imeSync()
+        requestRender()
+    }
+
+    fun selectAll() {
+        if (flow().paragraphs.isEmpty()) return
+        selection = FlowRange(FlowPos.START, flow().endPos())
+        imeSync()
+        requestRender()
+    }
+
+    // --- edits ---
+
+    /**
+     * Replace [range] with [text] (the IME/typing path). Single-paragraph edits
+     * coalesce into the open burst; anything structural flushes first and lands
+     * as its own undo step. Returns the caret position after the edit.
+     */
+    fun applyReplace(range: FlowRange, text: String, style: CharStyle? = null): FlowPos {
+        val r = range.normalized()
+        val para = flow().paragraphs.getOrNull(r.start.para)
+        // The armed style is only spent on text that actually lands; a deletion keeps it.
+        val effStyle = style ?: (if (text.isNotEmpty()) pendingStyle?.also { pendingStyle = null } else null)
+        if (r.start.para == r.end.para && '\n' !in text && para != null) {
+            if (burstPara !== para) {
+                flushBurst()
+                burstPara = para
+                burstBefore = ParaSnapshot.of(para)
+            }
+            val (_, caret) = FlowEditor(flow()).replaceRange(r, text, effStyle)
+            onChanged(active)
+            burstExtras += autoAppendPages()
+            selection = FlowRange.caret(caret)
+            handler.removeCallbacks(idleFlush)
+            handler.postDelayed(idleFlush, BURST_IDLE_MS)
+            ensureCaretVisible()
+            requestRender()
+            return caret
+        }
+        flushBurst()
+        // A typed paragraph break lands the caret on a fresh line with no left
+        // neighbour to inherit from, so carry the typing style over as pending
+        // (commitEdit -> placeCaret clears it, hence re-armed after).
+        val carry = if (text.endsWith("\n")) effStyle ?: FlowEditor(flow()).charStyleAt(r.start) else null
+        val (cmd, caret) = FlowEditor(flow()).replaceRange(r, text, effStyle)
+        commitEdit(cmd, caret)
+        if (carry != null && carry != CharStyle.DEFAULT) pendingStyle = carry
+        return caret
+    }
+
+    /**
+     * Replace [range] from OUTSIDE the IME mirror (menu paste, programmatic edits):
+     * always its own undo step through [commitEdit], so the mirror reconciles.
+     */
+    fun replaceExternal(range: FlowRange, text: String, style: CharStyle? = null): FlowPos {
+        flushBurst()
+        val (cmd, caret) = FlowEditor(flow()).replaceRange(range.normalized(), text, style)
+        commitEdit(cmd, caret)
+        return caret
+    }
+
+    /** Apply an already-built (and applied) command from the format bar / menus. */
+    fun commitEdit(cmd: Command?, caretTo: FlowPos?) {
+        if (cmd == null) {
+            caretTo?.let { placeCaret(it) }
+            return
+        }
+        onChanged(active)
+        val extras = autoAppendPages()
+        history.push(if (extras.isEmpty()) cmd else CompositeCommand(listOf(cmd) + extras))
+        caretTo?.let { selection = FlowRange.caret(it) }
+        onEdited()
+        onFlushed()
+        ensureCaretVisible()
+        requestRender()
+    }
+
+    /** Push the open typing burst (plus any auto-added pages) as one undo step. */
+    fun flushBurst() {
+        handler.removeCallbacks(idleFlush)
+        val para = burstPara ?: return
+        val before = burstBefore
+        burstPara = null
+        burstBefore = null
+        val extras = burstExtras.toList()
+        burstExtras.clear()
+        val edit = if (before != null && !before.matches(para)) {
+            FlowEditParagraph(para, before, ParaSnapshot.of(para))
+        } else {
+            null
+        }
+        val cmds = listOfNotNull(edit) + extras
+        when {
+            cmds.isEmpty() -> return
+            cmds.size == 1 -> history.push(cmds[0])
+            else -> history.push(CompositeCommand(cmds))
+        }
+        onFlushed()
+    }
+
+    /** Append pages sized like the last one until the published layout stops overflowing. */
+    private fun autoAppendPages(): List<Command> {
+        val need = frame()?.extraPagesNeeded ?: 0
+        if (need <= 0) return emptyList()
+        val doc = state.document
+        val out = mutableListOf<Command>()
+        repeat(need) {
+            val last = doc.pages.lastOrNull() ?: return out
+            out += AddPageAuto(doc, Page(last.width, last.height), doc.pages.size).also { it.redo() }
+        }
+        state.relayout()
+        onChanged(active)
+        return out
+    }
+
+    // --- geometry ---
+
+    fun ensureCaretVisible() {
+        if (!active) return
+        val f = frame() ?: return
+        val (pi, rect) = f.caretRect(selection.end) ?: return
+        if (state.pageRects.getOrNull(pi) == null) return
+        val cr = state.fromPageSpaceRect(pi, rect)
+        val topV = state.contentToViewport(Pt(0.0, cr.top)).y
+        val bottomV = state.contentToViewport(Pt(0.0, cr.bottom)).y
+        val margin = CARET_MARGIN * state.devicePxPerDp
+        val top = margin
+        val bottom = state.viewportH - margin
+        if (bottom <= top) return
+        val dy = when {
+            bottomV > bottom -> bottomV - bottom
+            topV < top -> topV - top
+            else -> 0.0
+        }
+        if (abs(dy) < 1.0) return
+        state.scrollBy(0.0, dy)
+        onViewChanged()
+        requestRender()
+    }
+
+    /** The caret's on-screen rect (viewport px), for the IME's cursor anchor. */
+    fun caretViewportRect(): Rect? {
+        val f = frame() ?: return null
+        val (pi, rect) = f.caretRect(selection.end) ?: return null
+        if (state.pageRects.getOrNull(pi) == null) return null
+        val cr = state.fromPageSpaceRect(pi, rect)
+        val tl = state.contentToViewport(Pt(cr.left, cr.top))
+        return Rect(tl.x, tl.y, cr.w * state.zoom, cr.h * state.zoom)
+    }
+
+    /** Selection highlight + caret + drag handles, drawn in the interaction overlay (content space). */
+    fun drawOverlay(r: com.pnotes.core.pal.Renderer) {
+        if (!active) return
+        val f = frame() ?: return
+        val accent = state.palette.accent
+        if (!selection.collapsed) {
+            for ((pi, rect) in f.selectionRects(selection)) {
+                if (state.pageRects.getOrNull(pi) == null) continue
+                r.fillRect(state.fromPageSpaceRect(pi, rect), accent.withAlpha(70))
+            }
+            val norm = selection.normalized()
+            drawHandle(r, norm.start, isStart = true, accent)
+            drawHandle(r, norm.end, isStart = false, accent)
+        } else {
+            val (pi, cr) = f.caretRect(selection.end) ?: return
+            if (state.pageRects.getOrNull(pi) == null) return
+            var top = cr.top
+            var height = cr.h
+            // A pending style (size bumped before typing) previews on the caret itself,
+            // grown/shrunk about the line's baseline like the glyphs it will produce.
+            pendingStyle?.let { pending ->
+                caretMetricsFor?.invoke(pending)?.let { m ->
+                    val baseline = f.placedLineFor(selection.end)?.second?.baseline ?: (cr.top + cr.h)
+                    top = baseline - m.ascent
+                    height = m.height
+                }
+            }
+            val w = (FlowFrame.CARET_WIDTH / state.zoom).coerceAtLeast(0.75)
+            r.fillRect(state.fromPageSpaceRect(pi, Rect(cr.left - w / 2.0, top, w, height)), accent)
+        }
+    }
+
+    /**
+     * The classic Android teardrop: a circle whose squared-off quadrant puts a sharp
+     * tip exactly at the caret's bottom, the body hanging away from the selection
+     * (down-left for the start handle, down-right for the end handle).
+     */
+    private fun drawHandle(r: com.pnotes.core.pal.Renderer, pos: FlowPos, isStart: Boolean, color: com.pnotes.core.model.Rgba) {
+        val center = handleCenter(pos, isStart) ?: return
+        val radius = HANDLE_RADIUS_DP * state.devicePxPerDp / state.zoom
+        val tipX = if (isStart) center.x + radius else center.x - radius
+        r.fillCircle(center, radius, color)
+        r.fillRect(Rect(minOf(tipX, center.x), center.y - radius, radius, radius), color)
+    }
+
+    /** Viewport point of the line middle at [pos]: the spot a handle drag really targets. */
+    private fun caretAnchorViewport(pos: FlowPos): Pt? {
+        val f = frame() ?: return null
+        val (pi, cr) = f.caretRect(pos) ?: return null
+        if (state.pageRects.getOrNull(pi) == null) return null
+        return state.contentToViewport(state.fromPageSpace(pi, Pt(cr.left, (cr.top + cr.bottom) / 2.0)))
+    }
+
+    /** Content-space centre of the teardrop handle for the caret at [pos]. */
+    private fun handleCenter(pos: FlowPos, isStart: Boolean): Pt? {
+        val f = frame() ?: return null
+        val (pi, cr) = f.caretRect(pos) ?: return null
+        if (state.pageRects.getOrNull(pi) == null) return null
+        // Hang the handle below the caret's *display* rect, so it reads screen-down even
+        // when the page is rotated.
+        val crC = state.fromPageSpaceRect(pi, cr)
+        val radius = HANDLE_RADIUS_DP * state.devicePxPerDp / state.zoom
+        val cx = if (isStart) crC.left - radius else crC.left + radius
+        return Pt(cx, crC.bottom + radius)
+    }
+
+    /** The handle a press at [viewport] grabs, preferring the nearer of the two. */
+    private fun grabHandle(viewport: Pt): Handle? {
+        val hitRadius = HANDLE_HIT_DP * state.devicePxPerDp
+        val norm = selection.normalized()
+        val dStart = handleCenter(norm.start, isStart = true)
+            ?.let { viewport.distanceTo(state.contentToViewport(it)) } ?: Double.MAX_VALUE
+        val dEnd = handleCenter(norm.end, isStart = false)
+            ?.let { viewport.distanceTo(state.contentToViewport(it)) } ?: Double.MAX_VALUE
+        return when {
+            dStart <= dEnd && dStart <= hitRadius -> Handle.START
+            dEnd <= hitRadius -> Handle.END
+            else -> null
+        }
+    }
+
+    private fun caretPosAt(content: Pt): FlowPos? {
+        val (pi, local) = pagePointAt(content) ?: return null
+        return when (val hit = frame()?.hitTest(pi, local) ?: return null) {
+            is FlowHit.Caret -> hit.pos
+            is FlowHit.Checkbox -> FlowPos(hit.paraIndex, 0)
+            FlowHit.BeyondEnd -> flow().endPos()
+        }
+    }
+
+    /** The page under [content], or the nearest one (drags cross the gaps between pages). */
+    private fun pagePointAt(content: Pt): Pair<Int, Pt>? {
+        var pi = state.pageIndexAtContent(content)
+        if (pi == null) {
+            val drawable = state.drawablePageRange()
+            var bestD = Double.MAX_VALUE
+            for (i in state.pageRects.indices) {
+                if (i !in drawable) continue // never target a hidden paginated neighbour
+                val d = state.pageRects[i].distanceTo(content)
+                if (d < bestD) {
+                    bestD = d
+                    pi = i
+                }
+            }
+        }
+        val index = pi ?: return null
+        if (state.pageRects.getOrNull(index) == null) return null
+        val page = state.document.pages.getOrNull(index) ?: return null
+        val p = state.toPageSpace(index, content)
+        return index to Pt(p.x.coerceIn(0.0, page.width), p.y.coerceIn(0.0, page.height))
+    }
+
+    companion object {
+        const val DRAG_SLOP = 14.0
+        const val DOUBLE_TAP_MS = 350L
+        const val DOUBLE_TAP_SLOP = 32.0
+        const val CARET_MARGIN = 24.0
+        const val BURST_IDLE_MS = 2000L
+        val LONG_PRESS_MS = android.view.ViewConfiguration.getLongPressTimeout().toLong()
+
+        const val HANDLE_RADIUS_DP = 8.0
+        const val HANDLE_HIT_DP = 26.0
+        const val AUTOSCROLL_ZONE_DP = 56.0
+        const val AUTOSCROLL_MAX_DP = 14.0
+        const val AUTOSCROLL_TICK_MS = 16L
+    }
+}

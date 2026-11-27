@@ -1,0 +1,19 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- "T" Letterform (Royal Blue #3B82F6 with Themed Stroke) -->
+    <path
+        android:fillColor="#FF3B82F6"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="round"
+        android:pathData="M5,4H19V8H16V6H13.5V18H15.5V20H8.5V18H10.5V6H8V8H5V4Z" />
+    <!-- Baseline Guide Indicator Bar (Themed Stroke) -->
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:pathData="M4,22H20" />
+</vector>

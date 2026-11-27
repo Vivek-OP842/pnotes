@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Apple PencilKit Style: Brush / Speed Pen -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M18.5,2.5 C19.9,3.9 19.9,6.1 18.5,7.5 L11,15 L7,16 L8,12 L15.5,4.5 C16.9,3.1 17.1,1.1 18.5,2.5 Z M3,21 C4.5,19 7,18 8,19 C9,20 8.5,21.5 6,22 C4.5,22.3 3,21 3,21 Z" />
+</vector>

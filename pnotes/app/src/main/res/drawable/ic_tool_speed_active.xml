@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Speed Pen Aerodynamic Barrel (Hot Crimson #F43F5E with Themed Stroke) -->
+    <path
+        android:fillColor="#FFF43F5E"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.2"
+        android:strokeLineJoin="round"
+        android:pathData="M18.5,2.5a2.83,2.83 0 0,1 4,4L11,18l-4,1 1,-4L18.5,2.5z" />
+    <!-- Dynamic Speed Slit -->
+    <path
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M15,5L19,9" />
+</vector>

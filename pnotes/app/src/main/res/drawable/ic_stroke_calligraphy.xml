@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Apple PencilKit Style: Fountain Pen / Calligraphy Nib -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:strokeColor="#FF000000"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M12,2 L6.5,8 L8.5,14 L12,21 L15.5,14 L17.5,8 Z M12,10 A1.5,1.5 0 1,0 12,13 A1.5,1.5 0 1,0 12,10 M12,13 L12,21" />
+</vector>

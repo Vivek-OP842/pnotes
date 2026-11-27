@@ -1,0 +1,55 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="720"
+    android:viewportHeight="720">
+    <group
+        android:translateY="42">
+        <!-- Silver Metallic Nib with Linear Gradient -->
+        <path
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M199.594,200.304C199.594,200.304 249.908,208.673 288.218,202.329C326.528,195.985 366.963,173.438 366.963,173.438L543.234,344.478C543.234,344.478 514.53,390.804 510.198,422.61C505.865,454.415 514.077,505.451 514.077,505.451L109.92,588.985C108.486,589.282 107.23,587.988 107.57,586.563L199.594,200.304Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="71.7836"
+                    android:startY="242.531"
+                    android:endX="544.822"
+                    android:endY="438.079"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FF7A7A7A" />
+                    <item android:offset="1.0" android:color="#FFE0E0E0" />
+                </gradient>
+            </aapt:attr>
+        </path>
+        <!-- Amber / Wood Section Barrel -->
+        <group
+            android:pivotX="341.041"
+            android:pivotY="150.286"
+            android:rotation="-46.1014">
+            <path
+                android:fillColor="#FF925020"
+                android:strokeColor="@color/tool_active_stroke"
+                android:strokeWidth="10"
+                android:strokeLineJoin="round"
+                android:pathData="M378.041,150.286h51.728a37,37 0 0,1 37,37v248.338a37,37 0 0,1 -37,37h-51.728a37,37 0 0,1 -37,-37v-248.338a37,37 0 0,1 37,-37Z" />
+        </group>
+        <!-- Upper Red Cap (#F30000) -->
+        <path
+            android:fillColor="#FFF30000"
+            android:strokeColor="@color/tool_active_stroke"
+            android:strokeWidth="10"
+            android:strokeLineJoin="round"
+            android:pathData="M459.416,90.1533L515.634,32.3189C532.985,14.4696 561.52,14.0653 579.369,31.4159L686.693,135.741C704.543,153.092 704.947,181.627 687.596,199.476L631.378,257.31L459.416,90.1533Z" />
+        <!-- Breather Hole Circle (#F40000) -->
+        <path
+            android:fillColor="#FFF40000"
+            android:pathData="M311.844,371.499a25.8553,25.8553 0 1,0 51.7106,0a25.8553,25.8553 0 1,0 -51.7106,0Z" />
+        <!-- Nib Slit Line (#F40000) -->
+        <path
+            android:fillColor="#FFF40000"
+            android:pathData="M107.856,584.975C108.367,582.927 109.456,581.07 110.993,579.624L317.839,385.049C319.321,383.656 321.66,383.761 323.011,385.281C324.304,386.737 324.21,388.956 322.797,390.297L116.581,585.968C115.296,587.188 113.735,588.079 112.031,588.566L110.434,589.022L109.886,589.179C108.343,589.621 106.936,588.153 107.443,586.63L107.856,584.975Z" />
+    </group>
+</vector>

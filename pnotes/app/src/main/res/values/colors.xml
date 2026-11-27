@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="window_bg">#0A0A0A</color>
+    <color name="accent">#00E676</color>
+    <color name="ic_launcher_background">#00000000</color>
+    <color name="loader_bg">#FF000000</color>
+
+    <!-- Dynamic Themed Colors for Active Tool Icons (Light Mode: Crisp Dark Slate Stroke & Pearl Fill) -->
+    <color name="tool_active_stroke">#1E293B</color>
+    <color name="tool_active_white_part">#E2E8F0</color>
+    <color name="tool_active_white_accent">#1E293B</color>
+</resources>

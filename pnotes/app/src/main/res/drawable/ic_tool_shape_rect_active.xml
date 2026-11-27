@@ -1,0 +1,13 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Rectangle Shape (Emerald Green #10B981 with Themed Stroke) -->
+    <path
+        android:fillColor="#FF10B981"
+        android:strokeColor="@color/tool_active_stroke"
+        android:strokeWidth="1.4"
+        android:strokeLineJoin="round"
+        android:pathData="M1.9922,12C1.9922,9.1997 1.9922,7.7996 2.5372,6.7301C3.0165,5.7892 3.7814,5.0243 4.7222,4.545C5.7918,4 7.1919,4 9.9922,4H13.9922C16.7924,4 18.1926,4 19.2621,4.545C20.203,5.0243 20.9679,5.7892 21.4472,6.7301C21.9922,7.7996 21.9922,9.1997 21.9922,12C21.9922,14.8003 21.9922,16.2004 21.4472,17.27C20.9679,18.2108 20.203,18.9757 19.2621,19.455C18.1926,20 16.7925,20 13.9922,20H9.9922C7.1919,20 5.7918,20 4.7222,19.455C3.7814,18.9757 3.0165,18.2108 2.5372,17.27C1.9922,16.2004 1.9922,14.8003 1.9922,12Z" />
+</vector>

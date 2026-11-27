@@ -1,0 +1,76 @@
+﻿package com.pnotes.platform
+
+import com.pnotes.canvas.ViewOverrides
+import org.json.JSONObject
+
+/**
+ * Remembers each note's last view — zoom, scroll and its View-menu overrides — keyed by
+ * document identity, so a note in the granted folder reopens exactly where (and how) the
+ * user left it. Held in memory and mirrored to a small JSON file ([JsonStore.viewStates]);
+ * [clear]ed when the user forgets the folder, since the keys are only meaningful for that
+ * folder's documents.
+ */
+class ViewStateStore(private val store: JsonStore) {
+
+    class View(val zoom: Double, val scrollX: Double, val scrollY: Double, val overrides: ViewOverrides)
+
+    private val views: MutableMap<String, View> = load()
+
+    private fun load(): MutableMap<String, View> {
+        val out = HashMap<String, View>()
+        val o = store.read()
+        for (key in o.keys()) {
+            val e = o.optJSONObject(key) ?: continue
+            out[key] = View(
+                e.optDouble("zoom", 0.0),
+                e.optDouble("scrollX", 0.0),
+                e.optDouble("scrollY", 0.0),
+                ViewOverridesJson.read(e),
+            )
+        }
+        return out
+    }
+
+    fun get(key: String): View? = views[key]
+
+    fun put(key: String, zoom: Double, scrollX: Double, scrollY: Double, overrides: ViewOverrides) {
+        views[key] = View(zoom, scrollX, scrollY, overrides)
+        store.write(toJson())
+    }
+
+    /** Forget one note's remembered view (e.g. when its file is deleted). */
+    fun remove(key: String) {
+        if (views.remove(key) != null) store.write(toJson())
+    }
+
+    /** Carry remembered views across a rename/move whose document ids (hence keys) changed. */
+    fun rekeyAll(mappings: Map<String, String>) {
+        var changed = false
+        for ((oldKey, newKey) in mappings) {
+            val v = views.remove(oldKey) ?: continue
+            views[newKey] = v
+            changed = true
+        }
+        if (changed) store.write(toJson())
+    }
+
+    /** Forget the remembered view for every note whose key matches [predicate] — a deleted file, or a deleted folder's whole subtree. */
+    fun removeMatching(predicate: (String) -> Boolean) {
+        if (views.keys.removeAll(predicate)) store.write(toJson())
+    }
+
+    /** Forget every remembered view (e.g. when the granted folder is released). */
+    fun clear() {
+        views.clear()
+        store.write(JSONObject())
+    }
+
+    private fun toJson(): JSONObject {
+        val o = JSONObject()
+        for ((k, v) in views) {
+            val e = JSONObject().put("zoom", v.zoom).put("scrollX", v.scrollX).put("scrollY", v.scrollY)
+            o.put(k, ViewOverridesJson.write(e, v.overrides))
+        }
+        return o
+    }
+}

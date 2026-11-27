@@ -1,0 +1,91 @@
+﻿package com.pnotes.core.tools
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class ToolsTest {
+
+    @Test fun factoryDefaultsMatchSpec() {
+        assertEquals(ToolConfig(3.0, true, 0.18, 0.0, endVelocitySensitivity = 0.0), ToolDefaults.configFor(Tool.PEN).copy(rgba = ToolConfig().rgba))
+        val cal = ToolDefaults.configFor(Tool.CALLIGRAPHY)
+        assertEquals(6.0, cal.baseWidth, 1e-9)
+        assertTrue(cal.pressureEnabled)
+        assertEquals(0.22, cal.pressureMinFactor, 1e-9)
+        assertEquals(0.60, cal.directionStrength, 1e-9)
+        val hi = ToolDefaults.configFor(Tool.HIGHLIGHTER)
+        assertEquals(16.0, hi.baseWidth, 1e-9)
+        assertFalse(hi.pressureEnabled)
+        assertEquals(24.0, ToolDefaults.configFor(Tool.ERASER).baseWidth, 1e-9)
+        assertEquals(2.0, ToolDefaults.configFor(Tool.LASSO).baseWidth, 1e-9)
+        // A tool without an entry uses ToolConfig() = (3.0, on, 0.35, 0.0).
+        assertEquals(ToolConfig().copy(rgba = ToolDefaults.configFor(Tool.PAN).rgba), ToolDefaults.configFor(Tool.PAN))
+    }
+
+    @Test fun sensitivityRoundTrip() {
+        assertEquals(1.0, ToolConversions.sensitivityToMinFactor(0.0), 1e-9)
+        assertEquals(0.1, ToolConversions.sensitivityToMinFactor(100.0), 1e-9)
+        assertEquals(0.55, ToolConversions.sensitivityToMinFactor(50.0), 1e-9)
+        // inverse
+        assertEquals(50.0, ToolConversions.minFactorToSensitivity(0.55), 1e-9)
+        assertEquals(0.0, ToolConversions.minFactorToSensitivity(1.0), 1e-9)
+    }
+
+    @Test fun multiplierRoundTrip() {
+        // M = 4.0  <->  ds = 0.60 (calligraphy default)
+        assertEquals(0.60, ToolConversions.multiplierToDirectionStrength(4.0), 1e-9)
+        assertEquals(4.0, ToolConversions.directionStrengthToMultiplier(0.60), 1e-9)
+        // clamp at 0.95
+        assertEquals(0.95, ToolConversions.multiplierToDirectionStrength(1000.0), 1e-9)
+        assertEquals(0.0, ToolConversions.multiplierToDirectionStrength(1.0), 1e-9)
+    }
+
+    @Test fun theNibIsSquareCutByDefaultAndTheSliderSpeaksDegrees() {
+        // Every tool reloads with a square nib, so nothing that predates the setting changes ink.
+        for (t in Tool.entries) assertEquals("tool ${t.id}", 0.0, ToolDefaults.configFor(t).nibCut, 0.0)
+        // The slider's unit: 0° is the square grind, and degrees round-trip through radians.
+        assertEquals(0.0, ToolConversions.degreesToNibCut(0.0), 0.0)
+        assertEquals(-15.0, ToolConversions.nibCutToDegrees(ToolConversions.degreesToNibCut(-15.0)), 1e-9)
+        assertEquals(20.0, ToolConversions.nibCutToDegrees(ToolConversions.degreesToNibCut(20.0)), 1e-9)
+        // Past the slider's ends the value clamps, so a hand-edited preset cannot ask for a nib
+        // turned further than the control offers.
+        assertEquals(
+            ToolConversions.degreesToNibCut(ToolConversions.NIB_CUT_RANGE_DEGREES.endInclusive),
+            ToolConversions.degreesToNibCut(90.0),
+            0.0,
+        )
+        assertEquals(
+            ToolConversions.degreesToNibCut(ToolConversions.NIB_CUT_RANGE_DEGREES.start),
+            ToolConversions.degreesToNibCut(-90.0),
+            0.0,
+        )
+    }
+
+    @Test fun widthRanges() {
+        assertEquals(4.0..80.0, ToolConversions.widthRange(Tool.HIGHLIGHTER))
+        assertEquals(1.0..50.0, ToolConversions.widthRange(Tool.PEN))
+    }
+
+    @Test fun strokeToolsAndAlpha() {
+        assertTrue(Tool.CALLIGRAPHY.isStroke)
+        assertTrue(Tool.DASHED.isStroke)
+        assertFalse(Tool.SELECT.isStroke)
+        assertEquals(0.35, Tool.HIGHLIGHTER.alphaScale, 1e-9)
+        assertEquals(1.0, Tool.PEN.alphaScale, 1e-9)
+        assertEquals(Tool.PAN, Tool.DEFAULT)
+    }
+
+    @Test fun shapeKinds() {
+        assertTrue(ShapeKind.RECTANGLE.isClosed)
+        assertTrue(ShapeKind.LINE.isOpen)
+        assertTrue(ShapeKind.ARROW.isOpen)
+        assertEquals(ShapeKind.RECTANGLE, ShapeKind.fromId("nonsense"))
+        assertEquals(ShapeKind.TRIANGLE, ShapeKind.fromId("triangle"))
+    }
+
+    @Test fun toolIdRoundTrip() {
+        for (t in Tool.entries) assertEquals(t, Tool.fromId(t.id))
+        assertEquals(14, Tool.wheelOrder.size)
+    }
+}

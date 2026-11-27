@@ -1,0 +1,45 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="717"
+    android:viewportHeight="717">
+    <group
+        android:translateX="13">
+        <!-- Body Outline -->
+        <path
+            android:strokeColor="#FF000000"
+            android:strokeWidth="45"
+            android:strokeLineJoin="round"
+            android:strokeLineCap="round"
+            android:pathData="M135.739,582.742L233.328,270.618L240.458,274.111L250.602,317.327L252.609,325.875L261.312,326.893L291.311,330.402L291.454,330.419L291.596,330.432L298.024,331.036L298.941,336.533L299.087,337.41L299.356,338.257L311.859,377.74L314.166,385.026L321.69,386.295L360.864,392.904L373.133,400.276L377.569,409.489L384.784,433.996L386.421,439.556L391.713,441.9L431.328,459.455C434.428,460.828 436.874,461.919 438.837,462.834C436.84,463.672 434.353,464.665 431.203,465.916L136.136,583.11C135.937,583.189 135.743,583.267 135.553,583.342C135.614,583.146 135.675,582.946 135.739,582.742Z" />
+        <!-- Lead Tip Fill -->
+        <path
+            android:fillColor="#FF000000"
+            android:pathData="M156.958,588.387C140.622,594.794 124.117,579.472 129.248,562.662L155.316,477.25L239.964,555.833L156.958,588.387Z" />
+        <!-- Facet 1 -->
+        <path
+            android:strokeColor="#FF000000"
+            android:strokeWidth="45"
+            android:strokeLineJoin="round"
+            android:strokeLineCap="round"
+            android:pathData="M402.866,82.5045C419.061,65.0113 430.374,52.8305 440.134,44.7674C449.614,36.9354 456.201,34.2261 462.702,33.9629C469.204,33.6997 475.987,35.8676 486.07,42.9075C496.45,50.1552 508.711,61.382 526.267,77.509L529.357,80.3477L296.879,333.429L253.577,333.162L238.194,260.376L402.866,82.5045Z" />
+        <!-- Facet 2 -->
+        <path
+            android:strokeColor="#FF000000"
+            android:strokeWidth="45"
+            android:strokeLineJoin="round"
+            android:strokeLineCap="round"
+            android:pathData="M529.354,80.2596L600.305,145.435L368.588,397.687L314.966,387.136L297.776,332.36L529.354,80.2596Z" />
+        <!-- Facet 3 -->
+        <path
+            android:strokeColor="#FF000000"
+            android:strokeWidth="45"
+            android:strokeLineJoin="round"
+            android:strokeLineCap="round"
+            android:pathData="M600.008,145.097L645.251,186.657C660.511,200.675 661.51,224.413 647.482,239.663L449.351,455.044L385.584,438.861L368.251,397.393L600.008,145.097Z" />
+        <!-- Dashes -->
+        <path
+            android:fillColor="#FF000000"
+            android:pathData="M259.357,589.956h51.75v22h-51.75Z M331.412,589.993h51.87v22h-51.87Z M403.594,590.03h51.87v22h-51.87Z M475.773,590.067h51.87v22h-51.87Z M547.953,590.104h52.46v22h-52.46Z" />
+    </group>
+</vector>
