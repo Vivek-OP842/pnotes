@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 MSG="${1:-update app}"
 BRANCH="master"
 
-git add pnotes .gitignore
+git add pnotes README.md .gitignore
 
 if git diff --cached --quiet; then
   echo "Koi app change nahi mila — kuch push karne ko nahi hai."
